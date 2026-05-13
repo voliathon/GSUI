@@ -152,6 +152,29 @@ A gold highlight shows your cursor position. A green highlight marks the selecte
 
 Mog house bags (Safe, Safe 2, Storage, Locker) are greyed out when outside the mog house and become available when you enter. Portable bags (Wardrobes, Satchel, Sack, Case) are always accessible.
 
+## Credits
+
+GSUI stands on the shoulders of two long-running Windower addons and the people who built them. Portions of this addon are directly derived from or modeled after their work:
+
+### [Rubenator](https://github.com/Rubenator) (Leviathan) — EquipViewer
+- **`libs/icon_extractor.lua`** is **directly Rubenator's code** from EquipViewer, used here under their BSD-style license. The copyright header is preserved at the top of that file. This is the module that reads item icons out of the FFXI client's DAT files so they can be drawn in the GSUI window.
+- The visual approach of rendering each equipment slot with its own item-icon image primitive was inspired by EquipViewer's UI.
+- Original EquipViewer: https://github.com/Rubenator/EquipViewer
+
+### Trv (Windower Discord)
+- The **base DAT-extraction code** that powers `icon_extractor.lua` was, per Rubenator's own credit line, "graciously provided by Trv of Windower discord." That code path is what makes it possible to pull icons out of the game files at runtime, and by extension is what lets GSUI show item images at all.
+
+### [Byrthnoth](https://github.com/Byrth) — GearSwap
+- The **gear-set Lua table format** that GSUI generates via `/gsui gen` and the `save`/`load` commands is GearSwap's native syntax — the same `sets.xxx = { main = ..., head = ..., ... }` shape that every GearSwap user already writes.
+- The **slot vocabulary** used in `libs/set_generator.lua` (`main`, `sub`, `range`, `ammo`, `head`, `neck`, `left_ear`, `right_ear`, `body`, `hands`, `left_ring`, `right_ring`, `back`, `waist`, `legs`, `feet`) is GearSwap's slot list verbatim, so anything GSUI produces drops cleanly into a GearSwap job file.
+- The broader concept of "gear sets as named, swappable data structures" that GSUI helps you build visually is entirely GearSwap's framing.
+- Original GearSwap: https://github.com/Windower/Lua/tree/dev/addons/GearSwap
+
+### Inspiration only (no code)
+- The Windower 4 core team and the `libs/` shipped with Windower (`packets`, `resources`, `images`, `texts`, `config`, etc.) — GSUI uses these as a dependency, it doesn't fork them.
+
+If you find any GSUI code that originated elsewhere and isn't credited here, please open an issue — the omission is unintentional.
+
 ## Disclaimer
 
 This addon is provided as-is. Use at your own risk. While there are no known issues, every system is different and results may vary. The author is not responsible for any problems that may arise from using this addon.
