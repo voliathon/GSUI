@@ -6,11 +6,9 @@ A Windower 4 addon for FFXI that provides a visual gear set builder, inventory o
 
 GSUI would not exist without the work of three people who built the foundations this addon stands on. The full breakdown of what portions of GSUI derive from each is in the [Credits](#credits) section further down, but in short:
 
-- **[Rubenator](https://github.com/Rubenator)** of Leviathan — author of **EquipViewer**. `libs/icon_extractor.lua` is their code, used here under their BSD-style license. Every item icon GSUI draws goes through this module.
+- **Rubenator** of Leviathan — author of **EquipViewer**. `libs/icon_extractor.lua` is their code, used here under their BSD-style license. Every item icon GSUI draws goes through this module.
 - **Trv** of the Windower Discord — author of the original DAT-extraction routine inside `icon_extractor.lua` that makes reading item icons out of FFXI's game files possible at runtime.
-- **[Byrthnoth](https://github.com/Byrth)** — author of **GearSwap**. The Lua gear-set table syntax that `/gsui gen`, `/gsui save`, and `/gsui load` produce is GearSwap's native format. The slot vocabulary in `libs/set_generator.lua` is GearSwap's. Anything GSUI generates drops cleanly into a GearSwap job file.
-
-If you use GSUI, go follow / star their projects too. They've been quietly making FFXI better for years.
+- **Byrthnoth** — author of **GearSwap**. The Lua gear-set table syntax that `/gsui gen`, `/gsui save`, and `/gsui load` produce is GearSwap's native format. The slot vocabulary in `libs/set_generator.lua` is GearSwap's. Anything GSUI generates drops cleanly into a GearSwap job file.
 
 ## Updates
 
@@ -192,19 +190,17 @@ This dumps the cache path, the FFXI path GSUI is using, whether a known-good DAT
 
 GSUI stands on the shoulders of two long-running Windower addons and the people who built them. Portions of this addon are directly derived from or modeled after their work:
 
-### [Rubenator](https://github.com/Rubenator) (Leviathan) — EquipViewer
+### Rubenator (Leviathan) — EquipViewer
 - **`libs/icon_extractor.lua`** is **directly Rubenator's code** from EquipViewer, used here under their BSD-style license. The copyright header is preserved at the top of that file. This is the module that reads item icons out of the FFXI client's DAT files so they can be drawn in the GSUI window.
 - The visual approach of rendering each equipment slot with its own item-icon image primitive was inspired by EquipViewer's UI.
-- Original EquipViewer: https://github.com/Rubenator/EquipViewer
 
 ### Trv (Windower Discord)
 - The **base DAT-extraction code** that powers `icon_extractor.lua` was, per Rubenator's own credit line, "graciously provided by Trv of Windower discord." That code path is what makes it possible to pull icons out of the game files at runtime, and by extension is what lets GSUI show item images at all.
 
-### [Byrthnoth](https://github.com/Byrth) — GearSwap
+### Byrthnoth — GearSwap
 - The **gear-set Lua table format** that GSUI generates via `/gsui gen` and the `save`/`load` commands is GearSwap's native syntax — the same `sets.xxx = { main = ..., head = ..., ... }` shape that every GearSwap user already writes.
 - The **slot vocabulary** used in `libs/set_generator.lua` (`main`, `sub`, `range`, `ammo`, `head`, `neck`, `left_ear`, `right_ear`, `body`, `hands`, `left_ring`, `right_ring`, `back`, `waist`, `legs`, `feet`) is GearSwap's slot list verbatim, so anything GSUI produces drops cleanly into a GearSwap job file.
 - The broader concept of "gear sets as named, swappable data structures" that GSUI helps you build visually is entirely GearSwap's framing.
-- Original GearSwap: https://github.com/Windower/Lua/tree/dev/addons/GearSwap
 
 ### Inspiration only (no code)
 - The Windower 4 core team and the `libs/` shipped with Windower (`packets`, `resources`, `images`, `texts`, `config`, etc.) — GSUI uses these as a dependency, it doesn't fork them.
