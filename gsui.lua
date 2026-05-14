@@ -1095,7 +1095,13 @@ windower.register_event('addon command', function(...)
             config.save(settings)
             icon_handler.init(path)
             windower.add_to_chat(207, 'GSUI: Game path set to ' .. path)
+        else
+            windower.add_to_chat(207, 'GSUI: Usage: /gsui gamepath <path-to-FINAL FANTASY XI directory>')
         end
+    elseif cmd == 'debug' or cmd == 'diag' or cmd == 'diagnostic' then
+        -- Dumps icon-extraction state to chat. Use this when the inventory
+        -- grid is blank or icons are missing to find the cause.
+        icon_handler.diagnostic_report()
     elseif cmd == 'org' or cmd == 'organize' or cmd == 'organizer' then
         if not initialized then initialize() end
         if ui.get_mode() ~= 'organizer' then
@@ -1196,6 +1202,7 @@ windower.register_event('addon command', function(...)
         windower.add_to_chat(207, '  /gsui kb - Toggle keyboard/drag mode')
         windower.add_to_chat(207, '  /gsui deselect - Clear multi-select')
         windower.add_to_chat(207, '  /gsui gamepath <path> - Set FFXI install path')
+        windower.add_to_chat(207, '  /gsui debug - Dump icon-extraction diagnostic (use if inventory is blank)')
         windower.add_to_chat(207, 'Multi-move (Organizer): right-click items to select (yellow tint),')
         windower.add_to_chat(207, '  then right-click a bag to move all selected there.')
     -- KB bind commands (called by Windower bind system)

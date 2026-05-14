@@ -152,6 +152,32 @@ A gold highlight shows your cursor position. A green highlight marks the selecte
 
 Mog house bags (Safe, Safe 2, Storage, Locker) are greyed out when outside the mog house and become available when you enter. Portable bags (Wardrobes, Satchel, Sack, Case) are always accessible.
 
+## Troubleshooting
+
+### Inventory grid is blank (no item icons), but tooltips show item text when hovering
+
+This is the most common report and almost always means **GSUI can't read the FFXI DAT files** to extract item icons. The inventory scanner still works (which is why hover tooltips and the Gear Stats panel show real data), but the icon extractor can't open the game's icon archives.
+
+**Diagnose it:**
+```
+//gsui debug
+```
+This dumps the cache path, the FFXI path GSUI is using, whether a known-good DAT file is readable, and whether a test extraction succeeds. Paste the output if you ask for help.
+
+**Fix it:**
+- On addon load you should also see a warning in chat like `[GSUI] WARNING: cannot read FFXI DAT files (...)`. The chat message also prints the path it's trying.
+- Set the correct FFXI install directory:
+  ```
+  //gsui gamepath C:\Path\To\PlayOnline\SquareEnix\FINAL FANTASY XI
+  ```
+  (Use *your* actual FFXI directory — the one that contains the `ROM` folder.)
+- After setting the path, type `//gsui refresh` to rescan, or close and reopen the window.
+
+**Why this happens:**
+- Windower's auto-detected `windower.ffxi_path` is wrong (uncommon, but happens on Steam installs or non-default drives).
+- The FFXI directory was moved after Windower was set up.
+- File-system permissions block `cache/` writes (rare on Windows, more common with portable installs).
+
 ## Credits
 
 GSUI stands on the shoulders of two long-running Windower addons and the people who built them. Portions of this addon are directly derived from or modeled after their work:
