@@ -967,16 +967,17 @@ deactivate_kb_binds = function()
     windower.send_command('unbind backspace')
 end
 
--- N key toggle for the GSUI main window. (GSUI uses B for its main
--- window — N keeps both addons coexistent.) GearTree-style sets editing
--- lives inside the main GearSwap tab now — no separate window / hotkey.
-local DIK_N = 49
+-- B key toggle for the GSUI main window. (Was temporarily N during the
+-- GSUI2 development fork so the two addons could coexist; now that v2 is
+-- GSUI it reclaims the original B hotkey.) GearTree-style sets editing
+-- lives inside the main GearSwap tab — no separate window / hotkey.
+local DIK_B = 48
 windower.register_event('keyboard', function(dik, pressed, flags, blocked)
     if blocked then return false end
     if not pressed then return false end
     local info = windower.ffxi.get_info()
     if not info or info.chat_open then return false end
-    if dik == DIK_N then
+    if dik == DIK_B then
         windower.send_command('gsui')
         return true
     end
