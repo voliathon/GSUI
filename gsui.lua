@@ -1,6 +1,6 @@
 _addon.name = 'GSUI'
-_addon.version = '1.3.0'
-_addon.author = 'GSUI'
+_addon.version = '2.0.0'
+_addon.author = 'mullerdane85-hash'
 _addon.commands = { 'gsui' }
 
 require('luau')
@@ -16,6 +16,11 @@ local set_gen = require('libs/set_generator')
 local icon_handler = require('libs/icon_handler')
 local bag_org = require('libs/bag_organizer')
 local stat_parser = require('libs/stat_parser')
+
+-- Sets controller (GearTree-style integration). Lives in its own
+-- sub-window so it doesn't tangle with the main GSUI window's tab
+-- system. Toggled via //gsui sets or F5.
+local sets_ctl = require('libs/gear_tree/sets_controller')
 
 -- Settings
 local defaults = {
@@ -295,6 +300,23 @@ local function initialize()
     local active_filters = scanner.find_active_filters(cached_all_items)
     ui.update_filter_presets(active_filters)
 
+    -- GearTree integration: try to locate + parse the currently-active
+    -- GearSwap file based on the player's name + main job. If it parses,
+    -- push the tree to the UI so the GearSwap tab shows the Sets list.
+    -- Failures (no file, parse error) are non-fatal — the addon still
+    -- works as a normal builder; user just won't see the Sets list.
+    local p = windower.ffxi.get_player()
+    if p and p.name and p.main_job then
+        local ok = sets_ctl.open(p.name, p.main_job)
+        if ok then
+            local info = sets_ctl.get_file_info()
+            if ui.set_sets_data then ui.set_sets_data(sets_ctl.get_tree(), info) end
+            windower.add_to_chat(207, 'GSUI: Loaded GearSwap file — ' .. (info.name or '?'))
+        else
+            windower.add_to_chat(167, 'GSUI: ' .. tostring(sets_ctl.get_error()))
+        end
+    end
+
     initialized = true
     windower.add_to_chat(207, 'GSUI: Loaded. Use /gsui to toggle.')
 end
@@ -453,6 +475,66 @@ local function handle_click(mx, my)
         ui.scroll_down()
         return true
     elseif hit.type == 'generate_btn' then
+        -- Context-aware: if a GearSwap set is currently selected, the
+        -- "Generate Set" button is relabeled "Update Gear" by
+        -- ui.refresh_generate_button_label(), and clicking it saves the
+        -- current equipment grid contents back into that set in the .lua
+        -- file via writer.save (with .bak backup).
+        local sel_node = ui.get_selected_set_node and ui.get_selected_set_node() or nil
+        windower.add_to_chat(207, ('GSUI dbg: Update Gear -> sel_node=%s has_gear=%s assignment=%s'):format(
+            tostring(sel_node and sel_node.key or 'nil'),
+            tostring(sel_node and sel_node.has_gear),
+            tostring(sel_node and sel_node.assignment ~= nil)))
+        if sel_node and sel_node.has_gear then
+            local changes = {}
+            local slot_count = 0
+            for slot, item in pairs(set_gen.get_all_slots() or {}) do
+                if item and item.name then
+                    changes[slot] = { name = item.name }
+                    slot_count = slot_count + 1
+                end
+            end
+            windower.add_to_chat(207, ('GSUI dbg: %d slots in changes table'):format(slot_count))
+            if not next(changes) then
+                ui.set_status('No equipment to save.')
+                windower.add_to_chat(167, 'GSUI: set_gen has 0 slots — nothing to save.')
+                return true
+            end
+            -- Detect if writer.save returned "changed = false" (it found
+            -- the assignment but the patched source ended up identical
+            -- to the original — usually means no field matched).
+            local ok, err = sets_ctl.save_changes(sel_node, changes)
+            if ok then
+                if type(ok) == 'table' and ok.changed == false then
+                    ui.set_status('Save ran but no fields changed.')
+                    windower.add_to_chat(167,
+                        'GSUI: writer ran but produced identical text — no slot keys matched the assignment.')
+                else
+                    ui.set_status('Updated set in .lua (.bak created).')
+                    windower.add_to_chat(207, 'GSUI: Updated ' ..
+                        (sets_ctl.get_file_info().name or '?') .. '; .bak created.')
+                    -- Without this, GearSwap keeps using the in-memory copy
+                    -- of the sets table that was loaded at game start. The
+                    -- file is fine on disk; only the in-memory state is
+                    -- stale. //gs reload re-reads the file and rebuilds
+                    -- the sets table so the next cast uses the new gear.
+                    windower.send_command('gs reload')
+                    windower.add_to_chat(160,
+                        'GSUI: auto-fired "//gs reload" so the new gear takes effect immediately.')
+                end
+                -- Re-push the freshly-parsed tree so the panel reflects
+                -- whatever changed on disk
+                if ui.set_sets_data then
+                    ui.set_sets_data(sets_ctl.get_tree(), sets_ctl.get_file_info())
+                end
+                if ui.refresh_sets_panel then ui.refresh_sets_panel() end
+            else
+                ui.set_status('Save failed: ' .. tostring(err))
+                windower.add_to_chat(167, 'GSUI: save failed — ' .. tostring(err))
+            end
+            return true
+        end
+        -- No set selected → original Generate Set behavior (export to clipboard)
         if set_gen.has_items() then
             set_gen.generate_to_clipboard()
             ui.set_status('Copied to clipboard!')
@@ -460,6 +542,105 @@ local function handle_click(mx, my)
         else
             ui.set_status('No items selected.')
         end
+        return true
+    elseif hit.type == 'sets_row' and hit.node then
+        local node = hit.node
+        local has_children = node.children and #node.children > 0
+        -- Click priority:
+        --   has_gear (with or without children) → LOAD the set's gear.
+        --     This covers GearSwap's common idiom where a parent like
+        --     sets.precast.FC IS itself a gear set AND has sub-sets like
+        --     FC.Cure / FC.Curaga. Without this branch, the user could
+        --     never see the "general magic fast cast" gear — only the
+        --     Cure-specific overrides.
+        --   children only (no own gear) → toggle expand/collapse.
+        if not node.has_gear then
+            if has_children then ui.toggle_set_node(node) end
+            return true
+        end
+        -- Leaf set → load its gear into the equipment grid.
+        ui.set_selected_set_node(node)
+        ui.refresh_sets_panel()              -- redraw with selection highlight
+        ui.refresh_generate_button_label()   -- "Generate Set" → "Update Gear"
+
+        -- Reset working grid
+        custom_set_active = true
+        set_gen.clear()
+        ui.clear_all_equip_slots()
+
+        -- Walk preview entries; for each slot value, try to find the
+        -- matching inventory item by name and assign it.
+        local preview = sets_ctl.preview_for(node)
+        local missing = {}
+        -- Slot-name normalizer. GearSwap files use short slot names
+        -- (ear1/ear2/ring1/ring2/ranged) but the equipment grid is keyed
+        -- by the canonical long names (left_ear/right_ear/left_ring/
+        -- right_ring/range). Without this map, click-loading a set
+        -- silently skips every ear/ring/ranged slot.
+        local gear_slots_lib = require('libs/gear_tree/gear_slots')
+        for _, entry in ipairs(preview) do
+            local slot = gear_slots_lib.canonical(entry.slot)
+            local val = entry.value
+            local want_name = nil
+            if type(val) == 'string' then
+                -- The parser stores slot values as raw RHS expressions —
+                -- for set_combine'd sets this is often `vanya.head` or
+                -- `{ name = "Foo", augments = {...} }`. Resolve through
+                -- the local-var table sets_ctl built at open() time so
+                -- references like `vanya.head` turn into "Vanya Hood +1".
+                want_name = sets_ctl.resolve_value(val) or val
+            elseif type(val) == 'table' then
+                want_name = val.name
+            end
+            if want_name then
+                local item_info = nil
+                for _, it in ipairs(cached_all_items) do
+                    if it.name == want_name then
+                        item_info = it
+                        break
+                    end
+                end
+                if item_info then
+                    ui.set_equip_slot_item(slot, item_info)
+                    set_gen.set_slot(slot, item_info)
+                else
+                    -- Item not in inventory — still show the name so the
+                    -- user knows what the set expects. Build a stub with
+                    -- every field the tooltip/stat code reads, defaulted
+                    -- to empty so #item.jobs etc. don't crash.
+                    local stub = {
+                        name        = want_name,
+                        slot        = slot,
+                        id          = 0,
+                        jobs        = {},
+                        level       = 0,
+                        item_level  = 0,
+                        stats       = '',
+                        augments    = nil,
+                        description = '(not in inventory)',
+                        bag_name    = nil,
+                        bag_index   = nil,
+                        category    = 'Armor',
+                    }
+                    ui.set_equip_slot_item(slot, stub)
+                    set_gen.set_slot(slot, stub)
+                    table.insert(missing, want_name)
+                end
+            end
+        end
+        update_custom_stats()
+        local path_str = '?'
+        local ok, tree_mod = pcall(require, 'libs/gear_tree/tree')
+        if ok and tree_mod and tree_mod.path_string then
+            path_str = tree_mod.path_string(node) or '?'
+        end
+        if #missing == 0 then
+            ui.set_status('Loaded ' .. path_str)
+        else
+            ui.set_status('Loaded ' .. path_str .. ' (' .. #missing .. ' missing)')
+        end
+        windower.add_to_chat(207, 'GSUI: Loaded ' .. path_str ..
+            (#missing > 0 and (' (' .. #missing .. ' items missing in storage)') or ''))
         return true
     elseif hit.type == 'filter_dropdown' then
         ui.toggle_dropdown()
@@ -509,10 +690,12 @@ local function handle_click(mx, my)
         end
         return true
     elseif hit.type == 'equip_slot' then
-        if hit.item then
-            ui.update_tooltip(hit.item)
-        elseif hit.slot then
-            -- Left-click on empty equip slot: toggle slot filter
+        -- Left-click on equip slot: toggle slot filter so the inventory pane
+        -- shows only items eligible for that slot. Works whether the slot
+        -- is currently empty OR already populated — that's how the user
+        -- swaps out an already-equipped piece (click slot to arm it for
+        -- replacement, then click an inventory item).
+        if hit.slot then
             if ui.get_slot_filter() == hit.slot then
                 ui.clear_slot_filter()
                 ui.set_inv_label('All Storage')
@@ -521,6 +704,7 @@ local function handle_click(mx, my)
             end
             apply_filter()
         end
+        if hit.item then ui.update_tooltip(hit.item) end
         return true
     elseif hit.type == 'inv_item' then
         if hit.item then
@@ -783,16 +967,18 @@ deactivate_kb_binds = function()
     windower.send_command('unbind backspace')
 end
 
--- B key toggle
-local DIK_B = 48
+-- N key toggle for the GSUI main window. (GSUI uses B for its main
+-- window — N keeps both addons coexistent.) GearTree-style sets editing
+-- lives inside the main GearSwap tab now — no separate window / hotkey.
+local DIK_N = 49
 windower.register_event('keyboard', function(dik, pressed, flags, blocked)
     if blocked then return false end
-    if dik == DIK_B and pressed then
-        local info = windower.ffxi.get_info()
-        if info and not info.chat_open then
-            windower.send_command('gsui')
-            return true
-        end
+    if not pressed then return false end
+    local info = windower.ffxi.get_info()
+    if not info or info.chat_open then return false end
+    if dik == DIK_N then
+        windower.send_command('gsui')
+        return true
     end
     return false
 end)
@@ -893,6 +1079,17 @@ windower.register_event('job change', function()
             -- Rebuild filters for new job
             local active_filters = scanner.find_active_filters(cached_all_items)
             ui.update_filter_presets(active_filters)
+            -- Re-locate + re-parse the GS file for the new job
+            local p = windower.ffxi.get_player()
+            if p and p.name and p.main_job then
+                local ok = sets_ctl.open(p.name, p.main_job)
+                if ok then
+                    local info = sets_ctl.get_file_info()
+                    if ui.set_sets_data then ui.set_sets_data(sets_ctl.get_tree(), info) end
+                else
+                    if ui.set_sets_data then ui.set_sets_data(nil, nil) end
+                end
+            end
         end
     end, 2)
 end)
@@ -994,6 +1191,10 @@ windower.register_event('mouse', function(type, x, y, delta, blocked)
                 if delta > 0 then ui.tooltip_scroll_up() else ui.tooltip_scroll_down() end
             elseif hit and hit.type == 'stat_panel' then
                 if delta > 0 then ui.stat_scroll_up() else ui.stat_scroll_down() end
+            elseif hit and hit.type == 'sets_row' then
+                -- Scroll the sets list. positive delta = scroll UP.
+                local SCROLL_PX = 14 * 3   -- 3 rows per wheel tick
+                ui.scroll_sets_panel(delta > 0 and -SCROLL_PX or SCROLL_PX)
             elseif hit and (hit.type == 'inv_item' or hit.type == 'window') then
                 if delta > 0 then ui.scroll_up() else ui.scroll_down() end
             end
@@ -1060,6 +1261,47 @@ windower.register_event('addon command', function(...)
     elseif cmd == 'refresh' or cmd == 'scan' then
         refresh_data()
         windower.add_to_chat(207, 'GSUI: Refreshed.')
+    elseif cmd == 'sets-where' or (cmd == 'sets' and args[1] == 'where') then
+        -- Diagnostic — shows exactly where the locator is looking and
+        -- what filenames it tries. Use this when "(no GS file)" shows up
+        -- in the panel and you're not sure which name the locator wants.
+        local p = windower.ffxi.get_player()
+        local pname = p and p.name or '?'
+        local pjob  = p and p.main_job or '?'
+        local loc = require('libs/gear_tree/locator')
+        windower.add_to_chat(207, 'GSUI: player="' .. pname .. '"  job="' .. pjob .. '"')
+        windower.add_to_chat(207, 'GSUI: data dir = ' .. loc.data_dir())
+        windower.add_to_chat(207, 'GSUI: candidate filenames being tried:')
+        local cands = {
+            pname .. '_' .. pjob:upper() .. '.lua',
+            pname .. '_' .. pjob:lower() .. '.lua',
+            pname:lower() .. '_' .. pjob:lower() .. '.lua',
+            pname:upper() .. '_' .. pjob:upper() .. '.lua',
+            pname .. '.lua', pname:lower() .. '.lua',
+            pjob:upper() .. '.lua', pjob:lower() .. '.lua',
+        }
+        for _, c in ipairs(cands) do
+            local f = io.open(loc.data_dir() .. c, 'r')
+            local mark = f and '✓' or '✗'
+            if f then f:close() end
+            windower.add_to_chat(160, '  ' .. mark .. '  ' .. c)
+        end
+        return
+    elseif cmd == 'sets-reload' or cmd == 'sets' then
+        -- Reparse the active GearSwap file. Used after the user edits the
+        -- .lua manually outside of GSUI, or after a save to confirm the
+        -- written file still parses cleanly.
+        local p = windower.ffxi.get_player()
+        local pname = p and p.name or '?'
+        local pjob  = p and p.main_job or '?'
+        local ok = sets_ctl.open(pname, pjob)
+        if ok then
+            local info = sets_ctl.get_file_info()
+            windower.add_to_chat(207, 'GSUI: Sets reloaded from ' .. (info.name or '?'))
+            if ui.set_sets_data then ui.set_sets_data(sets_ctl.get_tree(), info) end
+        else
+            windower.add_to_chat(167, 'GSUI: ' .. tostring(sets_ctl.get_error()))
+        end
     elseif cmd == 'pos' or cmd == 'position' then
         if #args >= 2 then
             local x = tonumber(args[1])

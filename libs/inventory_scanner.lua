@@ -392,8 +392,12 @@ function inventory_scanner.build_tooltip_text(item_info, highlight_pattern)
     end
 
     -- Job / Level
-    if #item_info.jobs > 0 then
-        local job_line = 'Lv.' .. item_info.level .. ' ' .. table.concat(item_info.jobs, '/')
+    -- jobs / level can be nil when we're rendering a "stub" item that the
+    -- GearTree integration creates for set entries not present in inventory.
+    -- Guard against nil so the tooltip / hover path doesn't spam errors.
+    if item_info.jobs and type(item_info.jobs) == 'table' and #item_info.jobs > 0 then
+        local job_line = 'Lv.' .. tostring(item_info.level or '?') ..
+                         ' ' .. table.concat(item_info.jobs, '/')
         table.insert(lines, word_wrap(job_line, max_chars))
     end
 

@@ -176,7 +176,19 @@ local state = {
     slot_filter = nil,
     -- Save/load
     save_btn_rect = {},
+    load_btn_rect = {},
     saved_sets = {},
+    -- GearTree integration — sets list shown in the left panel under the
+    -- Save/Load buttons. Populated by gsui.lua via ui.set_sets_data().
+    sets_tree           = nil,
+    sets_info           = nil,           -- { path, name }
+    sets_flat           = nil,           -- flattened display list
+    sets_selected_node  = nil,
+    sets_scroll         = 0,
+    sets_rects          = {},
+    sets_panel_rect     = {},            -- bounds for scroll wheel hit-test
+    on_set_clicked      = nil,
+    on_update_set       = nil,
     saved_dropdown_open = false,
 }
 
@@ -197,7 +209,12 @@ local function calc_dimensions()
     inv_grid_h = CELL * INV_VISIBLE_ROWS
     local right_h = LABEL_H + inv_grid_h + SCROLL_BTN_H + 2 + FILTER_BAR_H
     content_w = left_panel_w + PANEL_GAP + right_panel_w + PANEL_GAP + TOOLTIP_W + PANEL_GAP + STAT_W
-    content_h = math.max(left_panel_h + (BTN_H + SLOT_PAD) * 4, right_h)
+    -- Sets-list panel slot: equipment grid + 4 button rows + sets list (~240px).
+    -- 240 gives ~14 visible rows and was verified working. The earlier +420
+    -- bump broke the window's vertical layout on some configs — reverted.
+    -- Use scroll-wheel over the sets panel for longer files.
+    local left_total = left_panel_h + (BTN_H + SLOT_PAD) * 4 + 240
+    content_h = math.max(left_total, right_h)
     total_w = BORDER + SLOT_PAD + content_w + SLOT_PAD + BORDER
     total_h = BORDER + TITLE_BAR_H + SLOT_PAD + content_h + SLOT_PAD + BORDER
 end
@@ -380,6 +397,39 @@ function ui.build()
 
     state.save_btn_rect = { x = btn_x, y = btn4_y, w = half_btn, h = BTN_H }
     state.load_btn_rect = { x = load_x, y = btn4_y, w = half_btn, h = BTN_H }
+
+    -- === SETS LIST (GearTree integration) ===
+    -- Below the Save/Load buttons we render a scrollable list of every
+    -- gear set parsed from the active GearSwap .lua file. Clicking a
+    -- leaf set populates the equipment grid with that set's contents and
+    -- swaps the "Generate Set" button into "Update Gear" mode.
+    local sets_x = btn_x
+    local sets_y = btn4_y + BTN_H + SLOT_PAD * 2
+    local sets_w = BTN_W
+    local sets_h = math.max(180, content_h - (sets_y - cy) - SLOT_PAD)
+
+    elements.sets_header_bg = make_bg(sets_x, sets_y, sets_w, LABEL_H, 220, 20, 20, 50)
+    local sets_label = state.sets_info and ('Sets — ' .. state.sets_info.name)
+                    or 'Sets (no GS file)'
+    elements.sets_header = make_text(sets_label, sets_x + 4, sets_y + 2,
+        9, 200, 220, 255, true)
+    elements.sets_panel_bg = make_bg(sets_x, sets_y + LABEL_H,
+        sets_w, sets_h - LABEL_H, 200, 20, 25, 55)
+    -- Only show if the main window is currently visible. ui.show() /
+    -- ui.set_mode() handle re-showing when the user toggles GSUI back on.
+    if state.visible then
+        elements.sets_header_bg:show()
+        elements.sets_header:show()
+        elements.sets_panel_bg:show()
+    end
+
+    state.sets_panel_rect = { x = sets_x, y = sets_y + LABEL_H,
+                              w = sets_w, h = sets_h - LABEL_H }
+
+    -- Initial row render. Each time set_sets_data() or set_selected_set_node()
+    -- runs, ui.refresh_sets_panel() rebuilds these row texts in place.
+    elements.sets_rows = {}
+    ui.refresh_sets_panel()
 
     -- === ORGANIZER LEFT PANEL (hidden by default) ===
     local org_x = eq_x
@@ -593,6 +643,16 @@ function ui.build()
         hide_element(elements.load_btn_bg)
         hide_element(elements.load_btn_text)
         hide_element(elements.status_text)
+        -- Sets panel (GearTree integration)
+        hide_element(elements.sets_header_bg)
+        hide_element(elements.sets_header)
+        hide_element(elements.sets_panel_bg)
+        if elements.sets_rows then
+            for _, r in ipairs(elements.sets_rows) do
+                if r.bg   then hide_element(r.bg)   end
+                if r.text then hide_element(r.text) end
+            end
+        end
         for _, lbl in pairs(elements.equip_labels) do
             hide_element(lbl)
         end
@@ -867,6 +927,54 @@ function ui.update_inventory(all_items)
     ui.refresh_inv_grid()
 end
 
+-- =============================================================================
+-- GearTree integration — set/sets data sourced from the active GearSwap file.
+-- Stage 1 (this version): data hooks. The actual sets-list rendering inside
+-- the GearSwap tab body is wired up incrementally — these stubs let gsui.lua
+-- safely push data without crashes while the visual layer is being built.
+-- =============================================================================
+
+function ui.set_sets_data(tree, info)
+    state.sets_tree = tree
+    state.sets_info = info
+    state.sets_selected_node = nil
+    state.sets_scroll = 0
+    -- Flatten for display; tree_mod.flatten returns { {node, depth}, ... }
+    if tree then
+        local ok, tree_mod = pcall(require, 'libs/gear_tree/tree')
+        if ok and tree_mod and tree_mod.flatten then
+            state.sets_flat = tree_mod.flatten(tree)
+        end
+    else
+        state.sets_flat = nil
+    end
+    -- Trigger a redraw so the panel reflects the new data. ui.build()
+    -- already created the header/bg elements on init; we just need to
+    -- rebuild the per-row text children.
+    if ui.refresh_sets_panel then ui.refresh_sets_panel() end
+    if ui.refresh_generate_button_label then ui.refresh_generate_button_label() end
+end
+
+function ui.set_on_set_clicked(callback)
+    state.on_set_clicked = callback
+end
+
+function ui.set_on_update_set(callback)
+    state.on_update_set = callback
+end
+
+function ui.get_selected_set_node()
+    return state.sets_selected_node
+end
+
+function ui.set_selected_set_node(node)
+    state.sets_selected_node = node
+end
+
+function ui.get_sets_info()
+    return state.sets_info
+end
+
 -- Stable key for multi-select (bag + slot index uniquely identifies an item).
 local function sel_key(item)
     if not item or not item.bag_name or not item.bag_index then return nil end
@@ -907,6 +1015,127 @@ end
 function ui.clear_selection()
     state.selected_set = {}
     ui.refresh_inv_grid()
+end
+
+-- =============================================================================
+-- Sets panel render (GearTree integration)
+-- =============================================================================
+-- Rebuilds the per-row text elements showing every set parsed out of the
+-- player's GearSwap file. Called from ui.build() on init, ui.set_sets_data()
+-- on reload, and any click that changes selection / expand state.
+function ui.refresh_sets_panel()
+    -- Tear down previous row text elements
+    if elements.sets_rows then
+        for _, r in ipairs(elements.sets_rows) do
+            if r.text and r.text.destroy then r.text:hide(); r.text:destroy() end
+            if r.bg   and r.bg.destroy   then r.bg:hide();   r.bg:destroy()   end
+        end
+    end
+    elements.sets_rows = {}
+    state.sets_rects = {}
+
+    local rect = state.sets_panel_rect
+    if not rect or not rect.w then return end
+
+    -- Update header text in case the file name changed
+    if elements.sets_header then
+        local label = state.sets_info and ('Sets — ' .. state.sets_info.name)
+                    or 'Sets (no GS file)'
+        elements.sets_header:text(label)
+    end
+
+    if not state.sets_flat or #state.sets_flat == 0 then return end
+
+    local SETS_ROW_H = 14
+    local INDENT_PX  = 10
+    local rows_visible = math.floor(rect.h / SETS_ROW_H)
+    local first = math.max(1, math.floor(state.sets_scroll / SETS_ROW_H) + 1)
+    local last  = math.min(#state.sets_flat, first + rows_visible - 1)
+
+    for i = first, last do
+        local row = state.sets_flat[i]
+        local node  = row.node or row
+        local depth = row.depth or 0
+        local row_y = rect.y + (i - first) * SETS_ROW_H
+        local has_children = node.children and #node.children > 0
+        -- Glyph encoding:
+        --   ▼ / ▶  = pure folder (children, no own gear)
+        --   ◆      = folder that ALSO has its own gear (e.g. sets.precast.FC
+        --            which is both a set AND a parent of FC.Cure / FC.Curaga).
+        --            Click loads its gear; expansion is controlled by initial
+        --            expand_all on file load.
+        --   •      = leaf with gear
+        local glyph
+        if has_children and node.has_gear then
+            glyph = '◆ '
+        elseif has_children then
+            glyph = node.expanded and '▼ ' or '▶ '
+        elseif node.has_gear then
+            glyph = '• '
+        else
+            glyph = '  '
+        end
+        local label = glyph .. (node.key or '?')
+        -- Truncate to fit the narrow column
+        if #label > 22 then label = label:sub(1, 21) .. '…' end
+
+        -- Selection highlight
+        if state.sets_selected_node == node then
+            local sel_bg = make_bg(rect.x, row_y, rect.w, SETS_ROW_H, 90, 100, 200, 150)
+            -- Only show if the main window is currently visible — otherwise
+            -- a refresh while hidden would leak rows onto a hidden window.
+            if state.visible then sel_bg:show() end
+            table.insert(elements.sets_rows, { bg = sel_bg })
+        end
+
+        -- Row text — gear leaves get a warmer tint, branches are neutral
+        local r_, g_, b_ = 220, 220, 240
+        if node.has_gear and not has_children then
+            r_, g_, b_ = 240, 240, 200
+        end
+        local t = make_text(label, rect.x + 4 + depth * INDENT_PX, row_y + 1,
+            9, r_, g_, b_)
+        if state.visible then t:show() end
+        table.insert(elements.sets_rows, { text = t })
+
+        table.insert(state.sets_rects, {
+            type = 'sets_row', node = node,
+            x = rect.x, y = row_y, w = rect.w, h = SETS_ROW_H,
+        })
+    end
+end
+
+-- Scroll handler — called from the mouse wheel handler in gsui.lua.
+function ui.scroll_sets_panel(delta)
+    if not state.sets_flat or #state.sets_flat == 0 then return false end
+    local SETS_ROW_H = 14
+    local content_h = #state.sets_flat * SETS_ROW_H
+    local visible_h = (state.sets_panel_rect and state.sets_panel_rect.h) or 200
+    local max_scroll = math.max(0, content_h - visible_h)
+    state.sets_scroll = math.max(0, math.min(max_scroll, state.sets_scroll + delta))
+    ui.refresh_sets_panel()
+    return true
+end
+
+-- Toggle a branch's expand state (called from hit_test → click router).
+function ui.toggle_set_node(node)
+    if not node or not node.children or #node.children == 0 then return end
+    node.expanded = not node.expanded
+    local ok, tree_mod = pcall(require, 'libs/gear_tree/tree')
+    if ok and tree_mod and state.sets_tree then
+        state.sets_flat = tree_mod.flatten(state.sets_tree)
+    end
+    ui.refresh_sets_panel()
+end
+
+-- Update the Generate-Set button text to reflect the current mode.
+function ui.refresh_generate_button_label()
+    if not elements.generate_btn_text then return end
+    if state.sets_selected_node and state.sets_selected_node.has_gear then
+        elements.generate_btn_text:text('Update Gear')
+    else
+        elements.generate_btn_text:text('Generate Set')
+    end
 end
 
 function ui.refresh_inv_grid()
@@ -1277,6 +1506,13 @@ function ui.hit_test(mx, my)
         if lr and lr.x and mx >= lr.x and mx <= lr.x + lr.w and my >= lr.y and my <= lr.y + lr.h then
             return { type = 'load_btn' }
         end
+        -- Sets list rows (GearTree integration). Each row gets a rect
+        -- pushed into state.sets_rects when refresh_sets_panel() runs.
+        for _, r in ipairs(state.sets_rects or {}) do
+            if mx >= r.x and mx <= r.x + r.w and my >= r.y and my <= r.y + r.h then
+                return { type = 'sets_row', node = r.node }
+            end
+        end
     end
 
     -- Scroll buttons
@@ -1442,6 +1678,16 @@ function ui.show()
         show_element(elements.load_btn_bg)
         show_element(elements.load_btn_text)
         show_element(elements.status_text)
+        -- Sets panel (GearTree integration)
+        show_element(elements.sets_header_bg)
+        show_element(elements.sets_header)
+        show_element(elements.sets_panel_bg)
+        if elements.sets_rows then
+            for _, r in ipairs(elements.sets_rows) do
+                if r.bg   then show_element(r.bg)   end
+                if r.text then show_element(r.text) end
+            end
+        end
         for _, lbl in pairs(elements.equip_labels) do
             show_element(lbl)
         end
@@ -1502,6 +1748,18 @@ function ui.hide()
     hide_element(elements.tab_gs_text)
     hide_element(elements.tab_org_bg)
     hide_element(elements.tab_org_text)
+    -- Sets panel (GearTree integration) — without these the sets panel
+    -- stays visible after the main window is hidden, which is why you
+    -- see just the floating sets list with no equipment grid / tabs.
+    hide_element(elements.sets_header_bg)
+    hide_element(elements.sets_header)
+    hide_element(elements.sets_panel_bg)
+    if elements.sets_rows then
+        for _, r in ipairs(elements.sets_rows) do
+            if r.bg   then hide_element(r.bg)   end
+            if r.text then hide_element(r.text) end
+        end
+    end
     -- Scroll buttons
     if elements.scroll_up then
         hide_element(elements.scroll_up.bg)
@@ -1616,6 +1874,22 @@ function ui.destroy()
     destroy_element(elements.save_btn_text)
     destroy_element(elements.load_btn_bg)
     destroy_element(elements.load_btn_text)
+    -- Sets panel (GearTree integration) — without these, the header
+    -- text accumulates on every ui.build() call and you get the
+    -- "Sets (no GS file)" labels piled on top of each other.
+    destroy_element(elements.sets_header_bg)
+    destroy_element(elements.sets_header)
+    destroy_element(elements.sets_panel_bg)
+    if elements.sets_rows then
+        for _, r in ipairs(elements.sets_rows) do
+            destroy_element(r.bg)
+            destroy_element(r.text)
+        end
+        elements.sets_rows = {}
+    end
+    elements.sets_header_bg = nil
+    elements.sets_header    = nil
+    elements.sets_panel_bg  = nil
     destroy_element(elements.scroll_up)
     destroy_element(elements.scroll_down)
     destroy_element(elements.drag_icon)
@@ -1716,6 +1990,16 @@ function ui.set_mode(mode)
         show_element(elements.load_btn_bg)
         show_element(elements.load_btn_text)
         show_element(elements.status_text)
+        -- Sets panel (GearTree integration)
+        show_element(elements.sets_header_bg)
+        show_element(elements.sets_header)
+        show_element(elements.sets_panel_bg)
+        if elements.sets_rows then
+            for _, r in ipairs(elements.sets_rows) do
+                if r.bg   then show_element(r.bg)   end
+                if r.text then show_element(r.text) end
+            end
+        end
         for _, lbl in pairs(elements.equip_labels) do
             show_element(lbl)
         end
@@ -1746,6 +2030,16 @@ function ui.set_mode(mode)
         hide_element(elements.load_btn_bg)
         hide_element(elements.load_btn_text)
         hide_element(elements.status_text)
+        -- Sets panel (GearTree integration)
+        hide_element(elements.sets_header_bg)
+        hide_element(elements.sets_header)
+        hide_element(elements.sets_panel_bg)
+        if elements.sets_rows then
+            for _, r in ipairs(elements.sets_rows) do
+                if r.bg   then hide_element(r.bg)   end
+                if r.text then hide_element(r.text) end
+            end
+        end
         for _, lbl in pairs(elements.equip_labels) do
             hide_element(lbl)
         end
