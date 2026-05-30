@@ -392,8 +392,12 @@ function inventory_scanner.build_tooltip_text(item_info, highlight_pattern)
     end
 
     -- Job / Level
-    if #item_info.jobs > 0 then
-        local job_line = 'Lv.' .. item_info.level .. ' ' .. table.concat(item_info.jobs, '/')
+    -- jobs / level can be nil when we're rendering a "stub" item that the
+    -- GearTree integration creates for set entries not present in inventory.
+    -- Guard against nil so the tooltip / hover path doesn't spam errors.
+    if item_info.jobs and type(item_info.jobs) == 'table' and #item_info.jobs > 0 then
+        local job_line = 'Lv.' .. tostring(item_info.level or '?') ..
+                         ' ' .. table.concat(item_info.jobs, '/')
         table.insert(lines, word_wrap(job_line, max_chars))
     end
 
@@ -417,9 +421,53 @@ function inventory_scanner.build_tooltip_text(item_info, highlight_pattern)
         end
     end
 
-    -- Bag
+    -- Bag (with stack count if this slot holds more than one)
     if item_info.bag_name then
-        table.insert(lines, '[' .. item_info.bag_name .. ']')
+        local bag_line = '[' .. item_info.bag_name .. ']'
+        if item_info.count and item_info.count > 1 then
+            bag_line = bag_line .. ' x' .. item_info.count
+        end
+        table.insert(lines, bag_line)
+    end
+
+    -- Cross-bag total — sum every stack of this item across every bag.
+    --
+    -- We read straight from windower.ffxi.get_items() rather than from
+    -- cached_inventory because gsui.lua scans bags one-at-a-time via
+    -- scan_bag() and never calls scan_all_bags(), so cached_inventory
+    -- stays empty. The raw items table is the game's cached snapshot,
+    -- already in memory, so this is cheap (no Lua object allocation,
+    -- just integer reads).
+    --
+    -- Example: hovering one stack of 12 Remedies with 9 more in another
+    -- bag prints  "Total: 21 (2 stacks)".
+    if item_info.id then
+        local items_raw = windower.ffxi.get_items()
+        local total, stacks = 0, 0
+        if items_raw then
+            for _, bag_name in ipairs(all_bag_names_ordered) do
+                local bag = items_raw[bag_name]
+                if bag then
+                    -- bag.max is the bag capacity; iterate that many
+                    -- slots. Empty slots have id 0 so we skip them.
+                    local max_slot = bag.max or 80
+                    for i = 1, max_slot do
+                        local it = bag[i]
+                        if it and it.id and it.id == item_info.id and it.id ~= 0 then
+                            total = total + (it.count or 1)
+                            stacks = stacks + 1
+                        end
+                    end
+                end
+            end
+        end
+        if total > (item_info.count or 1) then
+            if stacks > 1 then
+                table.insert(lines, 'Total: ' .. total .. ' (' .. stacks .. ' stacks)')
+            else
+                table.insert(lines, 'Total: ' .. total)
+            end
+        end
     end
 
     return table.concat(lines, '\n')
