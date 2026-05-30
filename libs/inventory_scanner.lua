@@ -421,9 +421,13 @@ function inventory_scanner.build_tooltip_text(item_info, highlight_pattern)
         end
     end
 
-    -- Bag
+    -- Bag (with stack count if this slot holds more than one)
     if item_info.bag_name then
-        table.insert(lines, '[' .. item_info.bag_name .. ']')
+        local bag_line = '[' .. item_info.bag_name .. ']'
+        if item_info.count and item_info.count > 1 then
+            bag_line = bag_line .. ' x' .. item_info.count
+        end
+        table.insert(lines, bag_line)
     end
 
     return table.concat(lines, '\n')
