@@ -430,6 +430,32 @@ function inventory_scanner.build_tooltip_text(item_info, highlight_pattern)
         table.insert(lines, bag_line)
     end
 
+    -- Cross-bag total — sum every stack of this item across the whole
+    -- cached inventory. Only print if the grand total exceeds what's in
+    -- the slot you're hovering (otherwise the line is just a repeat of
+    -- the [bag] x12 line above).
+    --
+    -- Example: hovering one stack of 12 Elder Branches with 2 more
+    -- stacks elsewhere ->  "Total: 36 (3 stacks)"
+    if item_info.id then
+        local total, stacks = 0, 0
+        for _, items in pairs(cached_inventory or {}) do
+            for _, it in ipairs(items) do
+                if it.id == item_info.id then
+                    total = total + (it.count or 1)
+                    stacks = stacks + 1
+                end
+            end
+        end
+        if total > (item_info.count or 1) then
+            if stacks > 1 then
+                table.insert(lines, 'Total: ' .. total .. ' (' .. stacks .. ' stacks)')
+            else
+                table.insert(lines, 'Total: ' .. total)
+            end
+        end
+    end
+
     return table.concat(lines, '\n')
 end
 
