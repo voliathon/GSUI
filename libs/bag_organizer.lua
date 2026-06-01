@@ -20,19 +20,63 @@ function organizer.set_mog_house(val)
     in_mog_house = val
 end
 
--- Returns whether the player is in their mog house.
--- Prefers a live check against `windower.ffxi.get_items().safe.enabled` (ground
--- truth from the client — the Mog Safe is only `enabled` when inside the mog
--- house). Packet-based detection (0x05F BGM, 0x00A zone finish) is still wired
--- up to update the cached flag, but the live check fixes the case where GSUI
--- was loaded while already inside the mog house — neither packet fires then.
+-- Returns whether ANY mog-storage bag is currently writable.
+--
+-- The live check reads `enabled` flags from `windower.ffxi.get_items()`.
+-- Each mog-only bag's `enabled` flag is true when the server has granted
+-- the client access to that bag, which happens in three situations:
+--
+--   * Inside the player's Mog House (all four mog bags enabled)
+--   * At a Nomad Moogle (Tu'Lia, Whitegate, Adoulin, etc.) -- the bag
+--     the player selected from the moogle's menu becomes enabled
+--   * At a Porter Moogle -- typically Storage becomes enabled
+--
+-- The previous implementation only checked `items.safe.enabled`, which
+-- silently blocked transfers when the user was at a Nomad Moogle and
+-- selected Mog Safe 2 / Storage / Locker instead of Mog Safe.
+--
+-- Packet-based detection (0x05F BGM, 0x00A zone finish) still updates
+-- the cached `in_mog_house` flag as a fallback for the actual mog house.
 function organizer.is_in_mog_house()
     local ok, items = pcall(windower.ffxi.get_items)
-    if ok and items and items.safe and items.safe.enabled ~= nil then
-        in_mog_house = items.safe.enabled and true or false
-        return in_mog_house
+    if ok and items then
+        for bag in pairs(mog_only_bags) do
+            if items[bag] and items[bag].enabled == true then
+                in_mog_house = true
+                return true
+            end
+        end
+        in_mog_house = false
+        return false
     end
     return in_mog_house
+end
+
+-- Per-bag accessibility check. Returns true if the named bag is
+-- currently writable from the player's location:
+--
+--   * "Anywhere" bags (inventory, wardrobe1-8, satchel, sack, case)
+--     are always accessible while logged in.
+--   * Mog-only bags (safe, safe2, storage, locker) require either
+--     standing in the mog house OR a Nomad/Porter Moogle interaction
+--     that has flipped this specific bag's `enabled` flag.
+--
+-- This is what the gsui.lua transfer guards should consult instead of
+-- the coarse is_in_mog_house() check -- it correctly allows transfers
+-- to/from whichever bag the Nomad Moogle has unlocked without
+-- requiring the user to be at every other mog bag's home location.
+function organizer.is_bag_currently_accessible(bag_name)
+    if anywhere_bags[bag_name] then return true end
+    if not mog_only_bags[bag_name] then return false end
+    local ok, items = pcall(windower.ffxi.get_items)
+    if not ok or not items then return false end
+    local bag = items[bag_name]
+    if not bag then return false end
+    -- If `enabled` isn't exposed for some reason, fall back to the
+    -- cached mog-house flag so we don't accidentally block transfers
+    -- when the client API briefly omits the field.
+    if bag.enabled == nil then return in_mog_house end
+    return bag.enabled == true
 end
 
 function organizer.is_bag_accessible(bag_name)

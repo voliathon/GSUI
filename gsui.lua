@@ -357,9 +357,11 @@ local function handle_kb_action(action)
     elseif action.type == 'bag' then
         local dest = action.bag_name
         local item = action.item
-        if not bag_org.is_in_mog_house() and (bag_org.is_mog_bag(dest) or bag_org.is_mog_bag(item.bag_name)) then
-            ui.set_status('Must be in Mog House')
-            windower.add_to_chat(207, 'GSUI: Unable to move items to/from Mog House storage unless in your Mog House.')
+        if not bag_org.is_bag_currently_accessible(dest)
+           or not bag_org.is_bag_currently_accessible(item.bag_name) then
+            local blocked = not bag_org.is_bag_currently_accessible(dest) and dest or item.bag_name
+            ui.set_status('Bag not accessible: ' .. blocked)
+            windower.add_to_chat(207, 'GSUI: ' .. blocked .. ' is not accessible from your current location. Stand in your Mog House or at a Nomad/Porter Moogle that has unlocked it.')
         elseif ui.get_org_view() == 'scattered' and _org_all_bag_items then
             local move_count = 0
             for bag_name, items in pairs(_org_all_bag_items) do
@@ -753,14 +755,16 @@ local function handle_mouse_up(mx, my)
                 -- Dropped on a bag in organizer
                 local dest = drop.bag_name
                 local item = drop.item
-                if not bag_org.is_in_mog_house() and (bag_org.is_mog_bag(dest) or bag_org.is_mog_bag(item.bag_name)) then
-                    ui.set_status('Must be in Mog House')
-                    windower.add_to_chat(207, 'GSUI: Unable to move items to/from Mog House storage unless in your Mog House.')
+                if not bag_org.is_bag_currently_accessible(dest)
+                   or not bag_org.is_bag_currently_accessible(item.bag_name) then
+                    local blocked = not bag_org.is_bag_currently_accessible(dest) and dest or item.bag_name
+                    ui.set_status('Bag not accessible: ' .. blocked)
+                    windower.add_to_chat(207, 'GSUI: ' .. blocked .. ' is not accessible from your current location. Stand in your Mog House or at a Nomad/Porter Moogle that has unlocked it.')
                 elseif ui.get_org_view() == 'scattered' and _org_all_bag_items then
                     -- Consolidate: move all copies from every bag into destination
                     local move_count = 0
                     for bag_name, items in pairs(_org_all_bag_items) do
-                        if bag_name ~= dest and bag_org.is_bag_accessible(bag_name) then
+                        if bag_name ~= dest and bag_org.is_bag_currently_accessible(bag_name) then
                             for _, bag_item in ipairs(items) do
                                 if bag_item.id == item.id then
                                     bag_org.queue_move(bag_name, bag_item.bag_index, dest, bag_item.count)
@@ -1129,15 +1133,15 @@ windower.register_event('mouse', function(type, x, y, delta, blocked)
                 local selected = ui.get_selected_items()
                 if #selected == 0 then
                     ui.set_status('No items selected. Right-click items first.')
-                elseif not bag_org.is_in_mog_house() and bag_org.is_mog_bag(dest) then
-                    ui.set_status('Must be in Mog House')
-                    windower.add_to_chat(207, 'GSUI: Unable to move items to Mog House storage unless in your Mog House.')
+                elseif not bag_org.is_bag_currently_accessible(dest) then
+                    ui.set_status('Bag not accessible: ' .. dest)
+                    windower.add_to_chat(207, 'GSUI: ' .. dest .. ' is not accessible from your current location. Stand in your Mog House or at a Nomad/Porter Moogle that has unlocked it.')
                 else
                     local queued, skipped = 0, 0
                     for _, item in ipairs(selected) do
                         if item.bag_name == dest then
                             skipped = skipped + 1
-                        elseif not bag_org.is_in_mog_house() and bag_org.is_mog_bag(item.bag_name) then
+                        elseif not bag_org.is_bag_currently_accessible(item.bag_name) then
                             skipped = skipped + 1
                         else
                             bag_org.queue_move(item.bag_name, item.bag_index, dest, item.count)
