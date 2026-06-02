@@ -36,6 +36,11 @@ config.save(settings)
 local initialized = false
 local pending_refresh = false
 local refresh_timer = 0
+-- Hard deadline so a long burst of inventory packets (e.g. buying a
+-- stack of stuff from a vendor in rapid succession) doesn't push the
+-- debounced refresh out indefinitely. Refresh fires no later than
+-- 1 second after the FIRST packet in a burst.
+local refresh_deadline = 0
 local cached_all_items = {}
 local custom_set_active = false
 local _org_all_bag_items = {}
@@ -1017,6 +1022,12 @@ windower.register_event('incoming chunk', function(id, original, modified, injec
     if not initialized then return end
 
     if id == 0x050 or id == 0x020 or id == 0x01F or id == 0x01E or id == 0x01B then
+        -- First packet of a new burst: set the hard deadline so we
+        -- never wait longer than 1s for the refresh to land, even
+        -- under a packet flood (e.g. buying multiple stacks in a row).
+        if not pending_refresh then
+            refresh_deadline = os.clock() + 1.0
+        end
         pending_refresh = true
         refresh_timer = os.clock()
     elseif id == 0x05F then -- Music Change: BGM Type 6 = mog house
@@ -1065,6 +1076,9 @@ end)
 windower.register_event('outgoing chunk', function(id, original, modified, injected, blocked)
     if not initialized then return end
     if id == 0x100 then -- Job change
+        if not pending_refresh then
+            refresh_deadline = os.clock() + 1.0
+        end
         pending_refresh = true
         refresh_timer = os.clock()
     end
@@ -1213,12 +1227,30 @@ windower.register_event('mouse', function(type, x, y, delta, blocked)
     return false
 end)
 
--- Periodic refresh for pending changes + move queue
+-- Periodic refresh for pending changes + move queue.
+--
+-- Fires the refresh as soon as EITHER condition is met:
+--   * 0.3s of quiet since the most recent inventory packet (debounce
+--     so a burst of 0x020 / 0x01E packets only triggers ONE rebuild)
+--   * 1.0s since the FIRST packet in the burst (hard ceiling so a
+--     sustained flood -- e.g. buying lots of items rapidly -- still
+--     produces a visible refresh within 1s of the first packet)
+--
+-- Both the gear-tab view (refresh_data) AND the organizer view
+-- (refresh_organizer) are rebuilt. Previously only refresh_data ran,
+-- so users browsing the Organizer pane saw stale bag contents after
+-- a purchase until they switched modes / zoned.
 windower.register_event('prerender', function()
     if not initialized then return end
-    if pending_refresh and (os.clock() - refresh_timer) > 0.3 then
-        pending_refresh = false
-        refresh_data()
+    if pending_refresh then
+        local now = os.clock()
+        if (now - refresh_timer) > 0.3 or now > refresh_deadline then
+            pending_refresh = false
+            refresh_data()
+            if ui.get_mode and ui.get_mode() == 'organizer' then
+                refresh_organizer()
+            end
+        end
     end
     if bag_org.is_moving() then
         bag_org.process_queue()
