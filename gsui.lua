@@ -1240,6 +1240,12 @@ end)
 -- (refresh_organizer) are rebuilt. Previously only refresh_data ran,
 -- so users browsing the Organizer pane saw stale bag contents after
 -- a purchase until they switched modes / zoned.
+-- Text-input visibility state. The GSUI panel auto-hides while the
+-- chat input or macro editor is open so it can't ghost on top of the
+-- in-game text overlay. settings.visible is left untouched -- the
+-- panel reappears as soon as the user closes their text input.
+local _was_input_open = false
+
 windower.register_event('prerender', function()
     if not initialized then return end
     if pending_refresh then
@@ -1254,6 +1260,17 @@ windower.register_event('prerender', function()
     end
     if bag_org.is_moving() then
         bag_org.process_queue()
+    end
+
+    -- Hide while chat / macro editor is open; restore on close.
+    local info = windower.ffxi.get_info()
+    local input_open = info and info.chat_open == true
+    if input_open and not _was_input_open then
+        ui.hide()
+        _was_input_open = true
+    elseif (not input_open) and _was_input_open then
+        if settings.visible ~= false then ui.show() end
+        _was_input_open = false
     end
 end)
 
