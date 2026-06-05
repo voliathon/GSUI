@@ -387,16 +387,29 @@ function inventory_scanner.build_tooltip_text(item_info, highlight_pattern)
             if trimmed ~= '' then
                 -- "Enhances X effect" / "Augments X effect" lines never spell
                 -- out the value; annotate them with the LSB-sourced number.
+                -- Strict match only -- require the word "effect" after the
+                -- quoted name. The fallback `Enhances "X"` without "effect"
+                -- was too greedy and caught lines like
+                -- `Enhances "Cure" Potency +25%` where the value IS shown
+                -- but appears after the spell name rather than after "effect".
                 local effect = trimmed:match('[Ee]nhances%s*"([^"]+)"%s*[Ee]ffect')
                            or trimmed:match('[Aa]ugments%s*"([^"]+)"%s*[Ee]ffect')
-                           or trimmed:match('[Ee]nhances%s*"([^"]+)"')
-                           or trimmed:match('[Aa]ugments%s*"([^"]+)"')
                 if effect then
                     local annotation = _enhance_value(item_info.name, effect)
-                    if annotation and not trimmed:match('[%+%-]%d') then
-                        -- Only append when the line didn't already have a
-                        -- number; "Cure" Potency +25% should stay as-is.
-                        trimmed = trimmed .. '  (' .. annotation .. ')'
+                    if annotation then
+                        -- Only suppress when THIS effect already has a value
+                        -- right next to it -- e.g. `Enhances "X" effect +N%`.
+                        -- Numbers earlier on the line (like MP+30) don't count.
+                        -- Earlier whole-line check was too broad: Loquac.
+                        -- Earring's `MP+30 Enhances "Fast Cast" effect` was
+                        -- getting blocked by the +30 from MP even though the
+                        -- Fast Cast amount itself wasn't shown.
+                        local tail = trimmed:match('[Ee]ffect%s*(.*)$')
+                                  or trimmed:match('"' .. effect:gsub('[%-%.%+%[%]%(%)%%%^%$%?%*]', '%%%0') .. '"(.*)$')
+                                  or ''
+                        if not tail:match('^%s*[+%-]?%d') then
+                            trimmed = trimmed .. '  (' .. annotation .. ')'
+                        end
                     end
                 end
                 local wrapped = word_wrap(trimmed, max_chars)
