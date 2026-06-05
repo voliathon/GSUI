@@ -736,40 +736,41 @@ local function handle_click(mx, my)
             tostring(sel_node and sel_node.has_gear),
             tostring(sel_node and sel_node.assignment ~= nil)))
         if sel_node and sel_node.has_gear then
-            -- Live-capture: scan_equipment() returns
-            --   { slot_name = { item = { name, augments, ... } } }
-            -- with augments already decoded via extdata. Same shape the
-            -- /check examination path uses, so the writer's existing
-            -- { name=..., augments={...} } emitter just works.
-            local scanner = require('libs/inventory_scanner')
-            local live    = scanner.scan_equipment() or {}
+            -- GRID-as-source-of-truth. Earlier this read live equipped
+            -- gear via scan_equipment(), but that round-tripped through
+            -- the character -- meaning whatever GearSwap had auto-equipped
+            -- (its in-memory cached set) is what got written, not what
+            -- the user designed in the GSUI grid. User feedback:
+            --   "Equip now is not equipping the set I changed it to.
+            --    It equips sets that are already in my LUA but it's
+            --    not equipping any changes I make"
+            -- Root cause: grid edits never reached the .lua, so /gs
+            -- reload kept loading the OLD set in-memory, and GearSwap
+            -- auto-reverted every Equip Now call. Now we write what the
+            -- grid says directly -- the grid IS the spec.
+            local slots = set_gen.get_all_slots() or {}
             local changes = {}
             local slot_count = 0
-            for slot, slot_data in pairs(live) do
-                if slot_data and slot_data.item and slot_data.item.name then
+            for slot, item in pairs(slots) do
+                if item and item.name then
                     changes[slot] = {
-                        name     = slot_data.item.name,
-                        augments = slot_data.item.augments,   -- nil if no augments
+                        name     = item.name,
+                        augments = item.augments,   -- nil if no augments
                     }
                     slot_count = slot_count + 1
                 end
             end
-            windower.add_to_chat(207, ('GSUI dbg: captured %d equipped slots from live gear'):format(slot_count))
-            -- Dump the slot list so we can see if `sub` is missing or present.
+            windower.add_to_chat(207, ('GSUI dbg: captured %d slots from the GSUI grid'):format(slot_count))
+            -- Dump the slot list so it's obvious which slots got written.
             do
                 local present = {}
                 for s in pairs(changes) do present[#present+1] = s end
                 table.sort(present)
                 windower.add_to_chat(160, 'GSUI dbg: slots in changes: ' .. table.concat(present, ', '))
             end
-            -- Refresh the visualization grid so the user sees what just
-            -- got written.
-            if slot_count > 0 then
-                set_gen.populate_from_equipment(live)
-            end
             if not next(changes) then
-                ui.set_status('No equipment to save.')
-                windower.add_to_chat(167, 'GSUI: set_gen has 0 slots — nothing to save.')
+                ui.set_status('Grid is empty -- nothing to save.')
+                windower.add_to_chat(167, 'GSUI: grid has 0 slots -- drop items in the grid (or click a set to load it) before pressing Update Gear.')
                 return true
             end
             -- Detect if writer.save returned "changed = false" (it found
