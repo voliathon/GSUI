@@ -12,6 +12,28 @@ This software is provided **AS IS, without warranty of any kind**, express or im
 <!-- END DISCLAIMER -->
 # GSUI — GSUI + GearTree-style GearSwap integration
 
+## 🔑 Hotkey
+
+**Default toggle: `B`**
+
+Press `B` in-game to show or hide the window. Disabled while the chat bar or macro editor is open.
+
+**Rebind it any time** — GSUI is the only addon in the family with live hotkey rebinding:
+
+| Command | What it does |
+|---|---|
+| `//gsui changekey p` | Bind to a specific letter / digit (a-z, 0-9, F1-F12) |
+| `//gsui changekey capture` | Press any physical key — it becomes the new toggle |
+| `//gsui changekey #45` | Bind to a raw DirectInput scancode (any 0-255) |
+| `//gsui changekey off` | Disable the hotkey entirely; `//gsui` still works |
+| `//gsui changekey` | Echo the current binding |
+
+The rebind takes effect immediately — no `//lua reload` needed.
+
+Slash-command equivalents: `//gsui`, `//gsui toggle`.
+
+---
+
 **Status: in development.** This is a fork of [GSUI](https://github.com/mullerdane85-hash/GSUI)
 that adds direct read/edit/save integration with your currently-loaded
 GearSwap Lua file, similar to [GearTree](https://github.com/tru2/GearTree).
