@@ -1,13 +1,13 @@
 # Icon cache (generated at runtime from FFXI DAT files)
 cache/
 
-# User settings (generated per-character)
-data/
-# Exception: static lookup tables bundled with the addon are committed.
-# These are LSB-derived item-stat dumps, regenerated from
-# Documents/FFXIChecklist-Data/extract_item_stats.py.
-!data/item_stats.json
-!data/item_name_aliases.json
+# User settings (generated per-character). Don't blanket-exclude data/
+# because we also ship static lookup tables there; instead enumerate the
+# runtime-generated patterns explicitly.
+data/settings.xml
+data/*_settings.xml
+data/Kalitzo*
+data/*-character.json
 
 # Backups
 backup/
