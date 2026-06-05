@@ -588,26 +588,46 @@ local function handle_click(mx, my)
         ui.scroll_down()
         return true
     elseif hit.type == 'generate_btn' then
-        -- Context-aware: if a GearSwap set is currently selected, the
-        -- "Generate Set" button is relabeled "Update Gear" by
-        -- ui.refresh_generate_button_label(), and clicking it saves the
-        -- current equipment grid contents back into that set in the .lua
-        -- file via writer.save (with .bak backup).
+        -- "Update Gear": pull the LIVE currently-equipped gear (with
+        -- augments) straight from windower.ffxi.get_items() via the
+        -- inventory scanner, then write it to the selected set in the
+        -- .lua file. This mirrors what `//gs export` does, so what you
+        -- have on right now is what lands in the file -- no parsing the
+        -- GSUI grid, no dependency on what was drag-dropped in the UI.
+        --
+        -- (The Equipment grid on the left is still useful for visual
+        -- preview; we refresh it from the captured snapshot below so the
+        -- panel matches what was just written.)
         local sel_node = ui.get_selected_set_node and ui.get_selected_set_node() or nil
         windower.add_to_chat(207, ('GSUI dbg: Update Gear -> sel_node=%s has_gear=%s assignment=%s'):format(
             tostring(sel_node and sel_node.key or 'nil'),
             tostring(sel_node and sel_node.has_gear),
             tostring(sel_node and sel_node.assignment ~= nil)))
         if sel_node and sel_node.has_gear then
+            -- Live-capture: scan_equipment() returns
+            --   { slot_name = { item = { name, augments, ... } } }
+            -- with augments already decoded via extdata. Same shape the
+            -- /check examination path uses, so the writer's existing
+            -- { name=..., augments={...} } emitter just works.
+            local scanner = require('libs/inventory_scanner')
+            local live    = scanner.scan_equipment() or {}
             local changes = {}
             local slot_count = 0
-            for slot, item in pairs(set_gen.get_all_slots() or {}) do
-                if item and item.name then
-                    changes[slot] = { name = item.name }
+            for slot, slot_data in pairs(live) do
+                if slot_data and slot_data.item and slot_data.item.name then
+                    changes[slot] = {
+                        name     = slot_data.item.name,
+                        augments = slot_data.item.augments,   -- nil if no augments
+                    }
                     slot_count = slot_count + 1
                 end
             end
-            windower.add_to_chat(207, ('GSUI dbg: %d slots in changes table'):format(slot_count))
+            windower.add_to_chat(207, ('GSUI dbg: captured %d equipped slots from live gear'):format(slot_count))
+            -- Refresh the visualization grid so the user sees what just
+            -- got written.
+            if slot_count > 0 then
+                set_gen.populate_from_equipment(live)
+            end
             if not next(changes) then
                 ui.set_status('No equipment to save.')
                 windower.add_to_chat(167, 'GSUI: set_gen has 0 slots — nothing to save.')
