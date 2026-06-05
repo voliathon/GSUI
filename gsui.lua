@@ -713,6 +713,13 @@ local function handle_click(mx, my)
                 end
             end
             windower.add_to_chat(207, ('GSUI dbg: captured %d equipped slots from live gear'):format(slot_count))
+            -- Dump the slot list so we can see if `sub` is missing or present.
+            do
+                local present = {}
+                for s in pairs(changes) do present[#present+1] = s end
+                table.sort(present)
+                windower.add_to_chat(160, 'GSUI dbg: slots in changes: ' .. table.concat(present, ', '))
+            end
             -- Refresh the visualization grid so the user sees what just
             -- got written.
             if slot_count > 0 then
