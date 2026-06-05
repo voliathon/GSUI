@@ -6,6 +6,7 @@ cache/
 # runtime-generated patterns explicitly.
 data/settings.xml
 data/*_settings.xml
+data/inv_cache_*.lua
 data/Kalitzo*
 data/*-character.json
 
