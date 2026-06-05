@@ -440,38 +440,97 @@ local _SLOT_TO_CHAT = {
     right_ring = 'ring2',
 }
 
--- Quote a single Lua-string literal so it survives the //gs equip command line.
-local function _gs_quote_single(s)
-    return "'" .. tostring(s):gsub("\\", "\\\\"):gsub("'", "\\'") .. "'"
+-- Map GSUI slot names (also the GearSwap convention) to FFXI's internal
+-- slot IDs used by windower.ffxi.set_equip. Standard ordering 0..15.
+local _SLOT_NAME_TO_ID = {
+    main      = 0,  sub       = 1,  range     = 2,  ammo      = 3,
+    head      = 4,  neck      = 5,  left_ear  = 6,  right_ear = 7,
+    body      = 8,  hands     = 9,  left_ring = 10, right_ring= 11,
+    back      = 12, waist     = 13, legs      = 14, feet      = 15,
+}
+
+-- Compare two augment lists for equality (order-independent). Items in
+-- inventory may report augments in a slightly different order than what
+-- gs_export saved, so we sort-compare to be safe.
+local function _augments_match(a, b)
+    if not a and not b then return true end
+    if not a or not b then return false end
+    if #a ~= #b then return false end
+    local copy_a, copy_b = {}, {}
+    for i, v in ipairs(a) do copy_a[i] = v end
+    for i, v in ipairs(b) do copy_b[i] = v end
+    table.sort(copy_a); table.sort(copy_b)
+    for i = 1, #copy_a do
+        if copy_a[i] ~= copy_b[i] then return false end
+    end
+    return true
 end
 
--- Send an /equip-style command for a slot. Two paths:
---   1. Bare name (item has no augments) -> input /equip <slot> "<name>"
---      Works for unique items where there's no augment ambiguity.
---   2. Augmented name -> input //gs equip { <slot>={name="...",augments={...}} }
---      GearSwap matches the augment block against the inventory and equips
---      the exact augmented copy, not whichever instance sorts first. Without
---      this, `/equip back "Alaunus's Cape"` could pick the FC-aug cape when
---      the engaged set wants the TP-aug cape.
+-- Search every inventory bag for an item matching `name` AND (if
+-- augments were provided) the augment block. Returns bag_id, inv_index
+-- or nil if not found. Used as a fallback when the caller doesn't have
+-- the bag/index handy (e.g. //gsui equip slash from a stored set).
+local function _find_in_inventory(name, augs)
+    if not name then return nil end
+    local want_augs = augs and #augs > 0
+    for bag_name, bag_id in pairs(scanner.get_all_bag_ids() or {}) do
+        local ok, bag_items = pcall(windower.ffxi.get_items, bag_id)
+        if ok and bag_items and bag_items.enabled then
+            for inv_index, raw in pairs(bag_items) do
+                if type(raw) == 'table' and raw.id and raw.id > 0 then
+                    local def = res.items[raw.id]
+                    if def and (def.english == name or def.en == name or def.english_log == name) then
+                        if not want_augs then
+                            return bag_id, inv_index
+                        end
+                        -- Decode this item's augments and compare.
+                        local ok_ext, decoded = pcall(extdata.decode,
+                            { id = raw.id, extdata = raw.extdata })
+                        if ok_ext and decoded and _augments_match(decoded.augments or {}, augs) then
+                            return bag_id, inv_index
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return nil
+end
+
+-- Send a single-slot equip. Two paths:
+--   1. Item has bag_id + bag_index (from inventory_scanner) -> direct API:
+--      windower.ffxi.set_equip(inv_index, slot_id, bag_id). This is the
+--      same call GearSwap makes internally; it lands the EXACT inventory
+--      slot we point at, so an augmented cape's specific copy gets
+--      equipped instead of whichever copy sorts first.
+--   2. Item has only a name (legacy callers / load-from-disk path) ->
+--      search every bag for a matching name (+ augments if present) and
+--      then call set_equip with the found index.
 local function _send_equip(slot, item)
-    -- Accept either a bare string (legacy callers) or the full
-    -- {name=..., augments={...}} table that set_gen stores.
-    local name, augs
+    local name, augs, bag_id, inv_index
     if type(item) == 'table' then
-        name = item.name
-        augs = item.augments
+        name = item.name; augs = item.augments
+        bag_id = item.bag_id; inv_index = item.bag_index
     else
         name = item
     end
     if not name then return end
-    local chat_slot = _SLOT_TO_CHAT[slot] or slot
-    if augs and #augs > 0 then
-        local aug_parts = {}
-        for _, a in ipairs(augs) do aug_parts[#aug_parts+1] = _gs_quote_single(a) end
-        local cmd = ('input //gs equip {%s={name=%s,augments={%s}}}')
-            :format(chat_slot, _gs_quote_single(name), table.concat(aug_parts, ','))
-        windower.send_command(cmd)
+    local slot_id = _SLOT_NAME_TO_ID[slot]
+    if not slot_id then
+        windower.add_to_chat(167, 'GSUI: unknown slot "'..tostring(slot)..'" -- skipping equip.')
+        return
+    end
+    -- Resolve bag/index if the caller didn't have it.
+    if not (bag_id and inv_index) then
+        bag_id, inv_index = _find_in_inventory(name, augs)
+    end
+    if bag_id and inv_index then
+        windower.ffxi.set_equip(inv_index, slot_id, bag_id)
     else
+        -- Last-ditch: bare /equip lets the game pick whichever copy. Better
+        -- than silently no-equipping, with a warning so the user sees it.
+        windower.add_to_chat(167, ('GSUI: could not locate %s for %s slot; falling back to /equip (no augment match).'):format(name, slot))
+        local chat_slot = _SLOT_TO_CHAT[slot] or slot
         windower.send_command('input /equip ' .. chat_slot .. ' "' .. name .. '"')
     end
 end
