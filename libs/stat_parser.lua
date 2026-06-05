@@ -322,12 +322,39 @@ local function extract_value(text, patterns, exclude)
     return 0
 end
 
--- Parse a single item (description + augments) and return stat contributions
+-- Base-stat lookup table. Loaded lazily from data/item_stats.json on first
+-- use. See libs/base_stats.lua for the LSB-to-GSUI translation rules.
+local base_stats = require('libs/base_stats')
+
+-- Parse a single item (base stats from the LSB JSON + description + augments)
+-- and return stat contributions.
+--
+-- Resolution order:
+--   1. item.name              -> base_stats.lookup() -> numeric base stats
+--   2. item.description text  -> regex stat_defs (legacy path; description
+--                                field is usually nil because res.items has
+--                                never populated it, but kept as a fallback)
+--   3. item.augments text     -> regex stat_defs (always parsed)
+-- All three sum into the same return table per stat key.
 local function parse_item_stats(item)
     local stats = {}
     if not item then return stats end
 
-    -- Gather all text lines to scan
+    -- 1. JSON base-stat lookup. Try `name` first (gs_export shape), then
+    -- `english` (windower.ffxi.get_items() shape), then `en`. Same physical
+    -- item just labeled differently depending on which code path built it.
+    local lookup_name = item.name or item.english or item.en
+    if lookup_name then
+        local base = base_stats.lookup(lookup_name)
+        if base then
+            for k, v in pairs(base) do
+                stats[k] = (stats[k] or 0) + v
+            end
+        end
+    end
+
+    -- 2 + 3. Description + augment regex scan. Augments are the important
+    -- contributor here -- the description field is almost always nil.
     local lines = {}
     if item.description then
         for line in item.description:gmatch('[^\r\n]+') do
@@ -346,7 +373,7 @@ local function parse_item_stats(item)
             total = total + extract_value(line, def.patterns, def.exclude)
         end
         if total > 0 then
-            stats[def.key] = total
+            stats[def.key] = (stats[def.key] or 0) + total
         end
     end
 
