@@ -32,12 +32,28 @@ end)
 
 -- Stat definitions: name, patterns to match, suffix for display
 -- Each pattern extracts a numeric value from description/augment text
+-- Pattern variants below are curated from a sweep of every augment line that
+-- appears in the user's gs_export dumps (39 files, 183 unique augment
+-- strings, 63 unique stat-name tokens after splitting multi-stat lines).
+-- Each new pattern is paired with a concrete real-world augment text that
+-- prompted it. Comment the source in-line so the next maintainer knows why
+-- the pattern exists and what gear it was needed for.
 local stat_defs = {
     -- Casting
-    { key = 'fc',          name = 'Fast Cast',         cap = 80,   suffix = '%',  patterns = {'"Fast Cast"%s*%+(%d+)', 'Fast Cast%s*%+(%d+)'} },
+    { key = 'fc',          name = 'Fast Cast',         cap = 80,   suffix = '%',  patterns = {
+        '"Fast Cast"%s*%+(%d+)',
+        'Fast Cast%s*%+(%d+)',
+        -- FFXI description text: "Spellcasting time -N%" (e.g. Loricate Torque +1)
+        '[Ss]pellcasting time%s*%-(%d+)',
+    } },
     { key = 'qm',          name = 'Quick Magic',       cap = 10,   suffix = '%',  patterns = {'Quick Magic%s*%+(%d+)'} },
     { key = 'conserve_mp', name = 'Conserve MP',       cap = nil,  suffix = '',   patterns = {'"Conserve MP"%s*%+(%d+)', 'Conserve MP%s*%+(%d+)'} },
-    { key = 'sird',        name = 'Spell Interrupt',   cap = 100,  suffix = '%',  patterns = {'[Ss]pell [Ii]nterrupt.*%s*%-(%d+)', 'SIRD%s*%+(%d+)'} },
+    { key = 'sird',        name = 'Spell Interrupt',   cap = 100,  suffix = '%',  patterns = {
+        '[Ss]pell [Ii]nterrupt.*%s*%-(%d+)',
+        -- Augment text seen on Nodens Gorget etc.
+        'Spell interruption rate down%s*%+(%d+)',
+        'SIRD%s*%+(%d+)',
+    } },
     -- Haste
     { key = 'haste',       name = 'Haste (Gear)',      cap = 26,   suffix = '%',  patterns = {'Haste%s*%+(%d+)'}, exclude = {'Pet'} },
     -- Pet / SMN
@@ -45,32 +61,121 @@ local stat_defs = {
     { key = 'bp_dmg',      name = 'BP Damage',         cap = nil,  suffix = '',   patterns = {'[Bb]lood [Pp]act [Dd][am]g?%.?%s*%+(%d+)', '[Bb]lood [Pp]act [Dd]amage%s*%+(%d+)'} },
     { key = 'pet_haste',   name = 'Pet: Haste',        cap = nil,  suffix = '%',  patterns = {'Pet: Haste%s*%+(%d+)'} },
     { key = 'pet_atk',     name = 'Pet: Attack',       cap = nil,  suffix = '',   patterns = {'Pet: Attack%s*%+(%d+)', 'Pet: Atk%.%s*%+(%d+)'} },
-    { key = 'pet_macc',    name = 'Pet: Mag. Acc.',    cap = nil,  suffix = '',   patterns = {'Pet: Mag%. Acc%.%s*%+(%d+)'} },
+    { key = 'pet_macc',    name = 'Pet: Mag. Acc.',    cap = nil,  suffix = '',   patterns = {
+        'Pet: Mag%. Acc%.%s*%+(%d+)',
+        -- Abbreviated form seen on Apogee gear etc.
+        'Pet: M%.Acc%.%s*%+(%d+)',
+    } },
     { key = 'pet_mab',     name = 'Pet: MAB',          cap = nil,  suffix = '',   patterns = {'Pet: "Mag%.Atk%.Bns%."%s*%+(%d+)', 'Pet: MAB%s*%+(%d+)'} },
     { key = 'pet_acc',     name = 'Pet: Accuracy',     cap = nil,  suffix = '',   patterns = {'Pet: Acc%.%s*%+(%d+)', 'Pet: Accuracy%s*%+(%d+)'} },
-    { key = 'pet_ratk',    name = 'Pet: R.Atk',        cap = nil,  suffix = '',   patterns = {'Pet: R%.Atk%.%s*%+(%d+)'} },
+    { key = 'pet_ratk',    name = 'Pet: R.Atk',        cap = nil,  suffix = '',   patterns = {
+        'Pet: R%.Atk%.%s*%+(%d+)',
+        -- "Pet: Rng.Atk." seen on PUP / BST gear
+        'Pet: Rng%.Atk%.%s*%+(%d+)',
+    } },
     { key = 'pet_racc',    name = 'Pet: R.Acc',        cap = nil,  suffix = '',   patterns = {'Pet: R%.Acc%.%s*%+(%d+)', 'Pet: Rng%. Acc%.%s*%+(%d+)'} },
+    { key = 'pet_mdmg',    name = 'Pet: M.Dmg.',       cap = nil,  suffix = '',   patterns = {
+        'Pet: Mag%. Dmg%.%s*%+(%d+)',
+        'Pet: M%.Dmg%.%s*%+(%d+)',
+    } },
+    { key = 'pet_enmity',  name = 'Pet: Enmity',       cap = nil,  suffix = '',   patterns = {
+        -- Pet enmity can be +N (tank pets) or -N (dps pets). We capture
+        -- both signs; UI displays the raw signed value.
+        'Pet: Enmity%s*%+(%d+)',
+        'Pet: Enmity%s*%-(%d+)',
+    } },
     { key = 'perp',        name = 'Avatar Perp.',      cap = nil,  suffix = '',   patterns = {'[Aa]vatar.*[Pp]erpetuation.*%s*%-(%d+)', 'Perpetuation [Cc]ost %s*%-(%d+)'}, negative = true },
     { key = 'summon_skill',name = 'Summoning Skill',   cap = nil,  suffix = '',   patterns = {'[Ss]ummoning [Mm]agic [Ss]kill %s*%+(%d+)', '[Ss]ummoning [Mm]agic%s*%+(%d+)'} },
+    { key = 'healing_skill',name = 'Healing Skill',    cap = nil,  suffix = '',   patterns = {
+        -- Augment seen on Theophany / Pixie set Cure pieces.
+        '[Hh]ealing [Mm]agic [Ss]kill%s*%+(%d+)',
+        '[Hh]ealing [Mm]agic%s*%+(%d+)',
+    } },
     -- Melee
-    { key = 'da',          name = 'Double Attack',     cap = nil,  suffix = '%',  patterns = {'"Dbl%.Atk%."%s*%+(%d+)', 'Double Attack%s*%+(%d+)', '"Double Attack"%s*%+(%d+)'} },
+    { key = 'da',          name = 'Double Attack',     cap = nil,  suffix = '%',  patterns = {
+        '"Dbl%.Atk%."%s*%+(%d+)',
+        -- With space: "Dbl. Atk." seen on Adhemar set, Mache earrings etc.
+        '"Dbl%. Atk%."%s*%+(%d+)',
+        'Double Attack%s*%+(%d+)',
+        '"Double Attack"%s*%+(%d+)',
+    } },
     { key = 'ta',          name = 'Triple Attack',     cap = nil,  suffix = '%',  patterns = {'"Triple Atk%."%s*%+(%d+)', 'Triple Attack%s*%+(%d+)', '"Triple Attack"%s*%+(%d+)'} },
     { key = 'stp',         name = 'Store TP',          cap = nil,  suffix = '',   patterns = {'"Store TP"%s*%+(%d+)', 'Store TP%s*%+(%d+)'} },
     { key = 'dw',          name = 'Dual Wield',        cap = nil,  suffix = '',   patterns = {'Dual Wield%s*%+(%d+)', '"Dual Wield"%s*%+(%d+)'} },
     { key = 'subtle',      name = 'Subtle Blow',       cap = 50,   suffix = '',   patterns = {'"Subtle Blow"%s*%+(%d+)', 'Subtle Blow%s*%+(%d+)'} },
-    { key = 'crit',        name = 'Crit. Hit Rate',    cap = nil,  suffix = '%',  patterns = {'[Cc]ritical [Hh]it [Rr]ate%s*%+(%d+)'} },
+    { key = 'crit',        name = 'Crit. Hit Rate',    cap = nil,  suffix = '%',  patterns = {
+        '[Cc]ritical [Hh]it [Rr]ate%s*%+(%d+)',
+        -- Inventory-display form (no spaces): seen on Trial weapons / aug Colada
+        '[Cc]rit%.hit rate%s*%+(%d+)',
+        '[Cc]rit%. [Hh]it [Rr]ate%s*%+(%d+)',
+    } },
+    { key = 'crit_dmg',    name = 'Crit. Hit Dmg.',    cap = nil,  suffix = '%',  patterns = {
+        -- Trial weapons / Empyrean +3
+        '[Cc]rit%. hit damage%s*%+(%d+)',
+        '[Cc]ritical hit damage%s*%+(%d+)',
+    } },
+    { key = 'mag_crit_dmg',name = 'Mag. Crit. Dmg.',   cap = nil,  suffix = '%',  patterns = {
+        -- Theophany / Inyanga +3 set bonus, Magic Burst gear
+        'Mag%. crit%. hit dmg%.%s*%+(%d+)',
+        'Magic crit%. hit damage%s*%+(%d+)',
+    } },
+    { key = 'tp_bonus',    name = 'TP Bonus',          cap = nil,  suffix = '',   patterns = {
+        -- "TP Bonus +N" — Naegling, Tauret, Kannagi, others
+        'TP Bonus%s*%+(%d+)',
+        '"TP Bonus"%s*%+(%d+)',
+    } },
     -- WS
     { key = 'ws_dmg',      name = 'WS Damage',         cap = nil,  suffix = '%',  patterns = {'[Ww]eapon [Ss]kill [Dd]amage%s*%+(%d+)', 'WSD%s*%+(%d+)'} },
+    -- Weapon: trial weapons add a "DMG: +N" augment that boosts base weapon damage
+    { key = 'wpn_dmg_aug', name = 'Wpn DMG Aug',       cap = nil,  suffix = '',   patterns = {
+        'DMG:%s*%+(%d+)',
+        '"DMG:"%s*%+(%d+)',
+    }, exclude = {'Blade', 'Skill'} },
     -- Magic Offense
     { key = 'mab',         name = 'Magic Atk. Bonus',  cap = nil,  suffix = '',   patterns = {'"Mag%.Atk%.Bns%."%s*%+(%d+)', 'Magic Atk%. Bonus%s*%+(%d+)', 'MAB%s*%+(%d+)'}, exclude = {'Pet'} },
-    { key = 'macc',        name = 'Magic Accuracy',    cap = nil,  suffix = '',   patterns = {'Mag%. Acc%.%s*%+(%d+)', 'Magic Accuracy%s*%+(%d+)'}, exclude = {'Pet'} },
+    { key = 'macc',        name = 'Magic Accuracy',    cap = nil,  suffix = '',   patterns = {
+        'Mag%. Acc%.%s*%+(%d+)',
+        -- Some augments drop the trailing period: "Mag. Acc+20"
+        'Mag%. Acc%s*%+(%d+)',
+        'Magic Accuracy%s*%+(%d+)',
+    }, exclude = {'Pet'} },
+    { key = 'mag_dmg',     name = 'Magic Damage',      cap = nil,  suffix = '',   patterns = {
+        -- Weapon stat (Maxentius, Daybreak, etc.)
+        'Magic Damage%s*%+(%d+)',
+        'Mag%. Dmg%.%s*%+(%d+)',
+    }, exclude = {'Pet'} },
     { key = 'mb_dmg',      name = 'Magic Burst Dmg',   cap = 40,   suffix = '%',  patterns = {'[Mm]agic [Bb]urst.*%s*%+(%d+)'} },
+    { key = 'occult_acumen',name= '"Occult Acumen"',   cap = nil,  suffix = '',   patterns = {
+        -- JSE / Empyrean +3 BST aug
+        '"Occult Acumen"%s*%+(%d+)',
+    } },
     -- Defense
-    { key = 'dt',          name = 'Damage Taken',      cap = 50,   suffix = '%',  patterns = {'[Dd]amage [Tt]aken%s*%-(%d+)', 'DT%s*%-(%d+)'}, negative = true, exclude = {'Phys', 'Mag'} },
+    { key = 'dt',          name = 'Damage Taken',      cap = 50,   suffix = '%',  patterns = {'[Dd]amage [Tt]aken%s*%-(%d+)', 'DT%s*%-(%d+)'}, negative = true, exclude = {'Phys', 'Mag', 'Pet'} },
     { key = 'pdt',         name = 'Phys. Dmg Taken',   cap = 50,   suffix = '%',  patterns = {'[Pp]hys[^%d]*[Dd]amage [Tt]aken%s*%-(%d+)', 'PDT%s*%-(%d+)'}, negative = true },
-    { key = 'mdt',         name = 'Mag. Dmg Taken',    cap = 50,   suffix = '%',  patterns = {'[Mm]ag[^%d]*[Dd]amage [Tt]aken%s*%-(%d+)', 'MDT%s*%-(%d+)'}, negative = true },
-    { key = 'meva',        name = 'Magic Evasion',     cap = nil,  suffix = '',   patterns = {'Magic Evasion%s*%+(%d+)', 'Mag%. Eva%.%s*%+(%d+)', '[Mm]ag[ic]*.*[Ee]vas?i?o?n?%.?%s*%+(%d+)'} },
+    { key = 'mdt',         name = 'Mag. Dmg Taken',    cap = 50,   suffix = '%',  patterns = {
+        '[Mm]ag[^%d]*[Dd]amage [Tt]aken%s*%-(%d+)',
+        -- "Magic dmg. taken -N%" abbreviated form
+        '[Mm]agic dmg%. taken%s*%-(%d+)',
+        'MDT%s*%-(%d+)',
+    }, negative = true },
+    { key = 'meva',        name = 'Magic Evasion',     cap = nil,  suffix = '',   patterns = {
+        'Magic Evasion%s*%+(%d+)',
+        'Mag%. Eva%.%s*%+(%d+)',
+        -- "Mag. Evasion" mid-abbreviated form (Aya. +2 etc.)
+        'Mag%. Evasion%s*%+(%d+)',
+        '[Mm]ag[ic]*.*[Ee]vas?i?o?n?%.?%s*%+(%d+)',
+    } },
     { key = 'mdef',        name = 'Magic Def. Bonus',  cap = nil,  suffix = '',   patterns = {'"Mag%.Def%.Bns%."%s*%+(%d+)', 'Magic Def%. Bonus%s*%+(%d+)'} },
+    { key = 'evasion',     name = 'Evasion',           cap = nil,  suffix = '',   patterns = {
+        -- Regular evasion stat (PLD / NIN / DNC tank gear)
+        'Evasion%s*%+(%d+)',
+        'Eva%.%s*%+(%d+)',
+    }, exclude = {'Mag', 'Pet'} },
+    { key = 'enmity',      name = 'Enmity',            cap = nil,  suffix = '',   patterns = {
+        -- Enmity can be + (tank) or - (DPS). Captured separately.
+        'Enmity%s*%+(%d+)',
+        'Enmity%s*%-(%d+)',
+    }, exclude = {'Pet'} },
     -- Healing
     { key = 'cure_pot',    name = 'Cure Potency',      cap = 50,   suffix = '%',  patterns = {'"Cure" [Pp]otency%s*%+(%d+)', 'Cure [Pp]otency%s*%+(%d+)'} },
     -- Utility
@@ -89,6 +194,20 @@ local stat_defs = {
     { key = 'mp',          name = 'MP',                cap = nil,  suffix = '',   patterns = {'MP%s*%+(%d+)'} },
     { key = 'acc',         name = 'Accuracy',          cap = nil,  suffix = '',   patterns = {'Accuracy%s*%+(%d+)'}, exclude = {'Pet', 'Rng', 'Mag'} },
     { key = 'atk',         name = 'Attack',            cap = nil,  suffix = '',   patterns = {'Attack%s*%+(%d+)'}, exclude = {'Pet', 'Rng', 'Mag'} },
+    -- Pet base stats. Each strips its own "Pet: " prefix during exclude
+    -- handling on the main stat parser. Kept compact since they all share
+    -- the same shape; add more as they appear in gs_export sweeps.
+    { key = 'pet_str',     name = 'Pet: STR',          cap = nil,  suffix = '',   patterns = {'Pet: STR%s*%+(%d+)'} },
+    { key = 'pet_dex',     name = 'Pet: DEX',          cap = nil,  suffix = '',   patterns = {'Pet: DEX%s*%+(%d+)'} },
+    { key = 'pet_vit',     name = 'Pet: VIT',          cap = nil,  suffix = '',   patterns = {'Pet: VIT%s*%+(%d+)'} },
+    { key = 'pet_agi',     name = 'Pet: AGI',          cap = nil,  suffix = '',   patterns = {'Pet: AGI%s*%+(%d+)'} },
+    { key = 'pet_int',     name = 'Pet: INT',          cap = nil,  suffix = '',   patterns = {'Pet: INT%s*%+(%d+)'} },
+    { key = 'pet_mnd',     name = 'Pet: MND',          cap = nil,  suffix = '',   patterns = {'Pet: MND%s*%+(%d+)'} },
+    { key = 'pet_chr',     name = 'Pet: CHR',          cap = nil,  suffix = '',   patterns = {'Pet: CHR%s*%+(%d+)'} },
+    { key = 'pet_dt',      name = 'Pet: DT',           cap = 50,   suffix = '%',  patterns = {
+        'Pet: [Dd]amage [Tt]aken%s*%-(%d+)',
+        'Pet: DT%s*%-(%d+)',
+    }, negative = true },
 }
 
 -- Extract a numeric value from a text line using patterns.
