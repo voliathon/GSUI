@@ -1023,47 +1023,67 @@ local function handle_click(mx, my)
             windower.add_to_chat(167, 'GSUI: Equip Now -- grid is empty. Drop items in the slots first (or use Update Gear / Load).')
             return true
         end
-        -- DELEGATE TO THE GAME'S OWN /equip COMMAND. Previous attempts at
-        -- using windower.ffxi.set_equip with augment matching kept losing
-        -- to inventory-index shifts and extdata cache desync. The user
-        -- specifically requested: "use the GS export functionality" --
-        -- which under the hood is just /input /equip chat commands. So
-        -- that's what we do now: walk the canonical slot order, fire one
-        -- /equip per slot via coroutine.schedule with 200 ms spacing, let
-        -- the GAME handle inventory shuffling, augment selection, and
-        -- packet ordering.
+
+        -- Pre-scan inventory to know what we can actually equip. Items not
+        -- in any reachable bag are silently skipped -- no red "could not
+        -- locate X" spam per missing slot. User specifically asked for
+        -- this: "maybe it needs to skip stuff that can't be found."
         --
-        -- Trade-off: /equip can't target a SPECIFIC augmented copy when
-        -- two variants share a name (Alaunus's FC vs Alaunus's TP). It
-        -- picks whichever the game indexes first. If you need exact-
-        -- augment targeting, do //gs equip <set_name> against a set
-        -- defined in your job file -- that path goes through GearSwap's
-        -- own augment matcher.
+        -- Approach matches what GearSwap's equip() does internally: build
+        -- a list of available items first, then fire one /input /equip
+        -- per slot the game can actually fulfill. /equip is the same
+        -- mechanism /gs export round-trips through, so behavior is
+        -- consistent with what the user sees when they manually export.
+        local available = {}   -- canonical_name(lowercased) -> true
+        for bag_name, bag_id in pairs(scanner.get_all_bag_ids() or {}) do
+            local ok, bag_items = pcall(windower.ffxi.get_items, bag_id)
+            if ok and bag_items and bag_items.enabled then
+                for _, raw in pairs(bag_items) do
+                    if type(raw) == 'table' and raw.id and raw.id > 0 then
+                        local def = res.items[raw.id]
+                        if def then
+                            if def.english     then available[def.english:lower()]     = true end
+                            if def.en          then available[def.en:lower()]          = true end
+                            if def.english_log then available[def.english_log:lower()] = true end
+                            if def.enl         then available[def.enl:lower()]         = true end
+                        end
+                    end
+                end
+            end
+        end
+
         local SLOT_ORDER = {
             'main', 'sub', 'range', 'ammo',
             'head', 'body', 'hands', 'legs', 'feet',
             'neck', 'waist', 'left_ear', 'right_ear',
             'left_ring', 'right_ring', 'back',
         }
-        local count = 0
+        local sent, skipped = 0, {}
         local idx = 0
         for _, slot_name in ipairs(SLOT_ORDER) do
             local item = slots[slot_name]
             if item and item.name and item.name ~= '' then
-                count = count + 1
-                local chat_slot = _SLOT_TO_CHAT[slot_name] or slot_name
-                local cmd = 'input /equip ' .. chat_slot .. ' "' .. item.name .. '"'
-                local delay = idx * 0.20
-                idx = idx + 1
-                coroutine.schedule(function()
-                    windower.send_command(cmd)
-                end, delay)
+                if available[item.name:lower()] then
+                    local chat_slot = _SLOT_TO_CHAT[slot_name] or slot_name
+                    local cmd = 'input /equip ' .. chat_slot .. ' "' .. item.name .. '"'
+                    local delay = idx * 0.20
+                    idx = idx + 1
+                    sent = sent + 1
+                    coroutine.schedule(function()
+                        windower.send_command(cmd)
+                    end, delay)
+                else
+                    skipped[#skipped + 1] = slot_name .. '=' .. item.name
+                end
             end
         end
         local total_time = math.max(0, (idx - 1) * 0.20)
-        ui.set_status(('Equip Now: %d slots scheduled (%.1fs).'):format(count, total_time))
-        windower.add_to_chat(207, ('GSUI: Equip Now -- %d slot(s) sent via /equip over %.1fs.')
-            :format(count, total_time))
+        local msg = ('GSUI: Equip Now -- %d sent via /equip over %.1fs.'):format(sent, total_time)
+        if #skipped > 0 then
+            msg = msg .. (' Skipped %d (not in inventory): %s'):format(#skipped, table.concat(skipped, ', '))
+        end
+        ui.set_status(('Equip Now: %d sent, %d skipped.'):format(sent, #skipped))
+        windower.add_to_chat(207, msg)
         return true
     elseif hit.type == 'save_btn' then
         if set_gen.has_items() then
