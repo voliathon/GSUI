@@ -1023,25 +1023,22 @@ local function handle_click(mx, my)
             windower.add_to_chat(167, 'GSUI: Equip Now -- grid is empty. Drop items in the slots first (or use Update Gear / Load).')
             return true
         end
-        -- Build an ORDERED slot list (canonical /gs export order). The
-        -- previous tight pairs() loop fired all set_equip calls in the
-        -- same frame, which had two failure modes that explained the
-        -- "only head equips" symptom:
-        --   1. Packet collision -- consecutive set_equip calls within a
-        --      single frame can overwrite each other, so only the last
-        --      (or first) slot makes it into the outgoing equipment
-        --      packet.
-        --   2. Stale inventory indexes -- after slot 1 lands, items in
-        --      your wardrobe shift positions, so the bag_index we cached
-        --      at scan-time is wrong for slot 2 onward. _send_equip's
-        --      "use cached index if present" path then targets the wrong
-        --      inventory cell.
+        -- DELEGATE TO THE GAME'S OWN /equip COMMAND. Previous attempts at
+        -- using windower.ffxi.set_equip with augment matching kept losing
+        -- to inventory-index shifts and extdata cache desync. The user
+        -- specifically requested: "use the GS export functionality" --
+        -- which under the hood is just /input /equip chat commands. So
+        -- that's what we do now: walk the canonical slot order, fire one
+        -- /equip per slot via coroutine.schedule with 200 ms spacing, let
+        -- the GAME handle inventory shuffling, augment selection, and
+        -- packet ordering.
         --
-        -- Fix: walk the canonical slot order, schedule each via
-        -- coroutine.schedule with 150 ms spacing so each gets its own
-        -- packet window, and STRIP the cached bag_id/bag_index from the
-        -- item table before calling _send_equip so it re-resolves the
-        -- live inventory location for every slot.
+        -- Trade-off: /equip can't target a SPECIFIC augmented copy when
+        -- two variants share a name (Alaunus's FC vs Alaunus's TP). It
+        -- picks whichever the game indexes first. If you need exact-
+        -- augment targeting, do //gs equip <set_name> against a set
+        -- defined in your job file -- that path goes through GearSwap's
+        -- own augment matcher.
         local SLOT_ORDER = {
             'main', 'sub', 'range', 'ammo',
             'head', 'body', 'hands', 'legs', 'feet',
@@ -1052,25 +1049,20 @@ local function handle_click(mx, my)
         local idx = 0
         for _, slot_name in ipairs(SLOT_ORDER) do
             local item = slots[slot_name]
-            if item and item.name then
+            if item and item.name and item.name ~= '' then
                 count = count + 1
-                -- Defensive copy that drops the stale bag pointers; forces
-                -- _send_equip to call _find_in_inventory on every slot.
-                local fresh = {
-                    name      = item.name,
-                    augments  = item.augments,
-                    -- bag_id and bag_index intentionally omitted
-                }
-                local delay = idx * 0.15
+                local chat_slot = _SLOT_TO_CHAT[slot_name] or slot_name
+                local cmd = 'input /equip ' .. chat_slot .. ' "' .. item.name .. '"'
+                local delay = idx * 0.20
                 idx = idx + 1
                 coroutine.schedule(function()
-                    _send_equip(slot_name, fresh)
+                    windower.send_command(cmd)
                 end, delay)
             end
         end
-        local total_time = math.max(0, (idx - 1) * 0.15)
+        local total_time = math.max(0, (idx - 1) * 0.20)
         ui.set_status(('Equip Now: %d slots scheduled (%.1fs).'):format(count, total_time))
-        windower.add_to_chat(207, ('GSUI: Equip Now -- %d slot(s) sent over %.1fs.')
+        windower.add_to_chat(207, ('GSUI: Equip Now -- %d slot(s) sent via /equip over %.1fs.')
             :format(count, total_time))
         return true
     elseif hit.type == 'save_btn' then
