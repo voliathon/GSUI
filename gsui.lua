@@ -489,13 +489,29 @@ end
 -- Compare two augment lists for equality (order-independent). Items in
 -- inventory may report augments in a slightly different order than what
 -- gs_export saved, so we sort-compare to be safe.
+-- Normalize an augment string so cosmetic differences (extra whitespace,
+-- punctuation drift, case) don't sink the equality check.
+--   * lowercase
+--   * collapse runs of whitespace to a single space
+--   * strip double-quote characters (some sets write "Fast Cast"+10, some
+--     just Fast Cast+10)
+--   * trim leading / trailing whitespace
+local function _augnorm(s)
+    if type(s) ~= 'string' then return '' end
+    s = s:lower()
+    s = s:gsub('"', '')
+    s = s:gsub('%s+', ' ')
+    s = s:gsub('^%s+', ''):gsub('%s+$', '')
+    return s
+end
+
 local function _augments_match(a, b)
     if not a and not b then return true end
     if not a or not b then return false end
     if #a ~= #b then return false end
     local copy_a, copy_b = {}, {}
-    for i, v in ipairs(a) do copy_a[i] = v end
-    for i, v in ipairs(b) do copy_b[i] = v end
+    for i, v in ipairs(a) do copy_a[i] = _augnorm(v) end
+    for i, v in ipairs(b) do copy_b[i] = _augnorm(v) end
     table.sort(copy_a); table.sort(copy_b)
     for i = 1, #copy_a do
         if copy_a[i] ~= copy_b[i] then return false end
@@ -510,22 +526,29 @@ end
 local function _find_in_inventory(name, augs)
     if not name then return nil end
     local want_augs = augs and #augs > 0
+    -- Bare-name fallback. If the augment match never lands (Windower's
+    -- extdata cache for that slot can be empty / formatted slightly
+    -- differently than the saved set's augment block), we still land
+    -- SOMETHING -- the first copy by name. This is what you usually want
+    -- when you only own one copy of the item; if you own multiple variants
+    -- (FC cape vs Pet cape), this picks whichever is indexed first, which
+    -- is the same behavior a bare /equip command gives anyway.
+    local first_by_name = nil
+
     for bag_name, bag_id in pairs(scanner.get_all_bag_ids() or {}) do
         local ok, bag_items = pcall(windower.ffxi.get_items, bag_id)
         if ok and bag_items and bag_items.enabled then
             for inv_index, raw in pairs(bag_items) do
                 if type(raw) == 'table' and raw.id and raw.id > 0 then
                     local def = res.items[raw.id]
-                    -- Match against every name field FFXI exposes so a
-                    -- short-form set entry ("Hashi. Bazu. +2") and a
-                    -- long-form entry ("Hashishin Bazubands +2") both
-                    -- resolve to the same inventory copy.
                     if def and (def.english == name or def.en == name
                                 or def.english_log == name or def.enl == name) then
                         if not want_augs then
                             return bag_id, inv_index
                         end
-                        -- Decode this item's augments and compare.
+                        if not first_by_name then
+                            first_by_name = { bag_id, inv_index }
+                        end
                         local ok_ext, decoded = pcall(extdata.decode,
                             { id = raw.id, extdata = raw.extdata })
                         if ok_ext and decoded and _augments_match(decoded.augments or {}, augs) then
@@ -535,6 +558,12 @@ local function _find_in_inventory(name, augs)
                 end
             end
         end
+    end
+    -- Augment search struck out; fall through to whichever bare-name copy
+    -- we saw first so the slot still equips. _send_equip will still chat-
+    -- warn if BOTH paths failed.
+    if first_by_name then
+        return first_by_name[1], first_by_name[2]
     end
     return nil
 end
