@@ -150,7 +150,21 @@ function organizer.queue_move(src_bag, src_index, dest_bag, count)
     })
 end
 
--- Process one move per tick with throttle
+-- Process one move per tick with throttle.
+--
+-- We prefer Windower's native item-movement API over raw 0x029 packet
+-- injection. The native calls stay in sync with whatever the current
+-- Windower / FFXI client expects (HMAC fields, extra padding bytes,
+-- Target Index conventions, etc.); the hand-rolled 0x029 we used to ship
+-- was silently rejected by the server after a SE update -- packet fired,
+-- both bags enabled, zero items moved.
+--
+--   get_item(bag_id, slot, count)  -- pulls FROM `bag_id` slot INTO inventory
+--   put_item(bag_id, slot, count)  -- pushes FROM inventory slot INTO `bag_id`
+--
+-- Bag-to-bag with neither side being inventory falls back to the legacy
+-- 0x029 packet (no native API for that, and FFXI itself routes through
+-- inventory in the menu).
 function organizer.process_queue()
     if #move_queue == 0 then return false end
     if os.clock() - move_timer < MOVE_DELAY then return true end
@@ -159,13 +173,19 @@ function organizer.process_queue()
     local src_id = bag_ids[move.src_bag]
     local dest_id = bag_ids[move.dest_bag]
     if src_id and dest_id then
-        local p = packets.new('outgoing', 0x029)
-        p['Count'] = move.count
-        p['Bag'] = src_id
-        p['Target Bag'] = dest_id
-        p['Current Index'] = move.src_index
-        p['Target Index'] = 0x52
-        packets.inject(p)
+        if move.dest_bag == 'inventory' then
+            windower.ffxi.get_item(src_id, move.src_index, move.count)
+        elseif move.src_bag == 'inventory' then
+            windower.ffxi.put_item(dest_id, move.src_index, move.count)
+        else
+            local p = packets.new('outgoing', 0x029)
+            p['Count'] = move.count
+            p['Bag'] = src_id
+            p['Target Bag'] = dest_id
+            p['Current Index'] = move.src_index
+            p['Target Index'] = 0x52
+            packets.inject(p)
+        end
     end
     move_timer = os.clock()
     return #move_queue > 0

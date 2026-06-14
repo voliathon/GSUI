@@ -675,7 +675,7 @@ local function handle_kb_action(action)
                     else
                         windower.add_to_chat(207, 'GSUI: 0 of ' .. item.name .. ' moved to ' .. dest .. ' -- please stand in your Mog House or at a Nomad/Porter Moogle that has unlocked that bag.')
                     end
-                end, 1 + move_count * 0.5)
+                end, 2 + move_count * 0.5)
             else
                 ui.set_status('Nothing to move')
             end
