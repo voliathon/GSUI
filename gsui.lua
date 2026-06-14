@@ -749,6 +749,49 @@ local function handle_click(mx, my)
             show_org_scattered()
         end
         return true
+    elseif hit.type == 'stack_button' then
+        -- Fire FFXI's "Sort Item" packet (0x03A) for the bag currently
+        -- being shown. Server merges same-id stacks up to each item's
+        -- stack cap and reshuffles to the lowest slots. The Conflicts
+        -- and Scattered views don't have a single source bag, so in
+        -- those cases we stack every known bag in sequence.
+        local view = ui.get_org_view()
+        local targets = {}
+        if view == 'bags' then
+            local b = ui.get_org_selected_bag()
+            if b and b ~= 'all' then
+                table.insert(targets, b)
+            else
+                -- "All Bags" view: stack every real bag in sequence.
+                for _, bag_name in ipairs(scanner.get_all_bag_names()) do
+                    table.insert(targets, bag_name)
+                end
+            end
+        else
+            -- Conflicts / Scattered views: no single bag context, so
+            -- stack everything.
+            for _, bag_name in ipairs(scanner.get_all_bag_names()) do
+                table.insert(targets, bag_name)
+            end
+        end
+        if #targets == 0 then return true end
+        local fired = 0
+        for i, bag_name in ipairs(targets) do
+            coroutine.schedule(function()
+                if not initialized then return end
+                bag_org.sort_bag(bag_name)
+            end, (i - 1) * 0.4)
+            fired = fired + 1
+        end
+        local label = (#targets == 1) and targets[1] or (#targets .. ' bags')
+        ui.set_status('Stacking ' .. label)
+        windower.add_to_chat(207, 'GSUI: stacking ' .. label .. '...')
+        coroutine.schedule(function()
+            if not initialized then return end
+            refresh_organizer()
+            windower.add_to_chat(207, 'GSUI: stack complete for ' .. label .. '.')
+        end, fired * 0.4 + 1.0)
+        return true
     elseif hit.type == 'org_scroll_up' then
         ui.org_bag_scroll_up()
         return true

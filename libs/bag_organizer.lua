@@ -191,6 +191,21 @@ function organizer.process_queue()
     return #move_queue > 0
 end
 
+-- Stack identical items within a single bag. This is the same packet
+-- the in-game "Sort" menu button sends -- the server merges all stacks
+-- of the same item id in the named bag up to each item's stack cap and
+-- reshuffles them to the lowest slot indices. Fire-and-forget; the
+-- server pushes an inventory update packet back.
+function organizer.sort_bag(bag_name)
+    local bag_ids = scanner.get_all_bag_ids()
+    local bag_id = bag_ids[bag_name]
+    if not bag_id then return false end
+    local p = packets.new('outgoing', 0x03A)
+    p['Bag'] = bag_id
+    packets.inject(p)
+    return true
+end
+
 function organizer.is_moving()
     return #move_queue > 0
 end

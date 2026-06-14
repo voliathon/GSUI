@@ -104,6 +104,7 @@ local elements = {
     org_scattered_btn_bg = nil, org_scattered_btn_text = nil,
     org_scroll_up = nil, org_scroll_down = nil,
     sort_toggle_bg = nil, sort_toggle_text = nil,
+    stack_btn_bg = nil, stack_btn_text = nil,
     -- Keyboard navigation
     kb_cursor = nil, kb_selection = nil, kb_mode_text = nil,
 }
@@ -149,6 +150,7 @@ local state = {
     org_bag_scroll = 0,
     sort_mode = 'gear_first',
     sort_toggle_rect = {},
+    stack_btn_rect = {},
     -- Tooltip/stat scroll state
     tooltip_lines = {},
     tooltip_scroll = 0,
@@ -517,6 +519,16 @@ function ui.build()
     elements.sort_toggle_bg = make_bg(sort_btn_x, inv_y, sort_btn_w, LABEL_H, 200, 40, 70, 120)
     elements.sort_toggle_text = make_text(sort_label, sort_btn_x + 6, inv_y + 1, 9, 220, 220, 255, true)
 
+    -- Stack button (organizer mode only). Sits to the left of Gear First.
+    -- Fires the 0x03A "Sort Item" packet for the currently-displayed bag
+    -- to merge same-item stacks (server-side reshuffle, identical to the
+    -- in-game inventory menu "Sort" button).
+    local stack_btn_w = 50
+    local stack_btn_x = sort_btn_x - stack_btn_w - 4
+    state.stack_btn_rect = { x = stack_btn_x, y = inv_y, w = stack_btn_w, h = LABEL_H }
+    elements.stack_btn_bg = make_bg(stack_btn_x, inv_y, stack_btn_w, LABEL_H, 200, 40, 110, 70)
+    elements.stack_btn_text = make_text('Stack', stack_btn_x + 12, inv_y + 1, 9, 220, 255, 220, true)
+
     local grid_y = inv_y + LABEL_H
     elements.inv_bg = make_bg(inv_x, grid_y, right_panel_w, inv_grid_h, 130, 20, 20, 50)
     elements.inv_bg:show()
@@ -679,6 +691,8 @@ function ui.build()
         end
         show_element(elements.sort_toggle_bg)
         show_element(elements.sort_toggle_text)
+        show_element(elements.stack_btn_bg)
+        show_element(elements.stack_btn_text)
         ui.show_org_panel()
     end
 end
@@ -1445,6 +1459,10 @@ function ui.hit_test(mx, my)
         if sr and sr.x and mx >= sr.x and mx <= sr.x + sr.w and my >= sr.y and my <= sr.y + sr.h then
             return { type = 'sort_toggle' }
         end
+        local kr = state.stack_btn_rect
+        if kr and kr.x and mx >= kr.x and mx <= kr.x + kr.w and my >= kr.y and my <= kr.y + kr.h then
+            return { type = 'stack_button' }
+        end
     end
 
     -- Organizer elements
@@ -1689,6 +1707,8 @@ function ui.show()
     if state.mode == 'organizer' then
         show_element(elements.sort_toggle_bg)
         show_element(elements.sort_toggle_text)
+        show_element(elements.stack_btn_bg)
+        show_element(elements.stack_btn_text)
     end
 
     -- Left panel: mode-dependent
@@ -1825,6 +1845,8 @@ function ui.hide()
     -- Sort toggle
     hide_element(elements.sort_toggle_bg)
     hide_element(elements.sort_toggle_text)
+    hide_element(elements.stack_btn_bg)
+    hide_element(elements.stack_btn_text)
     -- Keyboard nav
     hide_element(elements.kb_cursor)
     hide_element(elements.kb_selection)
@@ -1956,6 +1978,8 @@ function ui.destroy()
     destroy_element(elements.org_scroll_down)
     destroy_element(elements.sort_toggle_bg)
     destroy_element(elements.sort_toggle_text)
+    destroy_element(elements.stack_btn_bg)
+    destroy_element(elements.stack_btn_text)
     destroy_element(elements.kb_cursor)
     destroy_element(elements.kb_selection)
     destroy_element(elements.kb_mode_text)
@@ -1985,6 +2009,7 @@ function ui.destroy()
         org_scattered_btn_bg = nil, org_scattered_btn_text = nil,
         org_scroll_up = nil, org_scroll_down = nil,
         sort_toggle_bg = nil, sort_toggle_text = nil,
+        stack_btn_bg = nil, stack_btn_text = nil,
         kb_cursor = nil, kb_selection = nil, kb_mode_text = nil,
     }
 end
@@ -2013,6 +2038,8 @@ function ui.set_mode(mode)
         ui.hide_org_panel()
         hide_element(elements.sort_toggle_bg)
         hide_element(elements.sort_toggle_text)
+        hide_element(elements.stack_btn_bg)
+        hide_element(elements.stack_btn_text)
         ui.set_inv_label('All Storage')
         -- Show gearswap left panel
         show_element(elements.equip_bg)
@@ -2091,6 +2118,8 @@ function ui.set_mode(mode)
         ui.show_org_panel()
         show_element(elements.sort_toggle_bg)
         show_element(elements.sort_toggle_text)
+        show_element(elements.stack_btn_bg)
+        show_element(elements.stack_btn_text)
         state.org_view = 'bags'
         state.org_selected_bag = 'inventory'
         state.org_bag_scroll = 0
