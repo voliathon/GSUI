@@ -208,10 +208,22 @@ local function find_inventory_slot(item_id)
 end
 
 -- Max times a single queue entry can fail its precondition check
--- before we give up. With MOVE_DELAY = 0.5s, 6 retries = 3 seconds of
--- patience -- generous for normal server latency, short enough that
--- a truly stranded item isn't held in the queue forever.
-local MAX_RETRIES = 6
+-- before we give up. With MOVE_DELAY = 0.5s, 20 retries = 10 seconds
+-- of patience -- enough for server-side response lag during heavy
+-- inventory packet bursts, short enough that a truly stranded item
+-- isn't held in the queue forever.
+local MAX_RETRIES = 20
+
+-- One-shot error flag the addon can poll + clear. Set when we drop an
+-- entry because inventory was full and bag-to-bag couldn't stage --
+-- the addon surfaces it as a chat warning so the user knows WHY moves
+-- aren't landing instead of just seeing the queue silently drain.
+organizer.last_error = nil
+function organizer.consume_error()
+    local e = organizer.last_error
+    organizer.last_error = nil
+    return e
+end
 
 function organizer.process_queue()
     if #move_queue == 0 then return false end
@@ -253,6 +265,7 @@ function organizer.process_queue()
             move.retries = (move.retries or 0) + 1
             if move.retries >= MAX_RETRIES then
                 table.remove(move_queue, 1)   -- give up
+                organizer.last_error = 'inventory_full'
             end
             move_timer = os.clock()
             return #move_queue > 0

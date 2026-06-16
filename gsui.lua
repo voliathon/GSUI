@@ -149,6 +149,16 @@ local function start_move_pump()
         else
             dbg('pump', 'queue drained, firing ' .. #_pending_verifies .. ' pending verify(s)')
             _move_pump_active = false
+            -- Surface any queue-level error (inventory full during a
+            -- bag-to-bag staging attempt, etc.) BEFORE the verifies fire
+            -- so the user sees the root cause first, then the per-bulk
+            -- delta reports.
+            if bag_org.consume_error then
+                local err = bag_org.consume_error()
+                if err == 'inventory_full' then
+                    windower.add_to_chat(207, 'GSUI: inventory is full -- bag-to-bag moves need at least 1 free inventory slot for staging. Free a slot and retry.')
+                end
+            end
             fire_all_pending_verifies()
         end
     end
