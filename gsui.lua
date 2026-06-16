@@ -292,6 +292,73 @@ local show_org_bag
 local show_org_conflicts
 local show_org_scattered
 
+-- Print a smart "N items did not move" message that diagnoses the
+-- actual failure mode instead of always blaming mog-house location.
+-- Three cases the server actually rejects on:
+--   1. Destination bag isn't unlocked from the player's current spot
+--      (Storage / Safe2 from Mog Garden, etc.) -- talk-to-moogle path
+--   2. Destination bag is full at 80/80 -- bag full path
+--   3. Item is locked / rare-exclusive duplicate / quest item or the
+--      server timing missed the verify window -- generic fallback
+local function report_single_move_failure(item_name, dest)
+    local dest_used, dest_max = nil, nil
+    local ok_snap, snap_items = pcall(windower.ffxi.get_items)
+    if ok_snap and snap_items and snap_items[dest] then
+        dest_used = snap_items[dest].count
+        dest_max  = snap_items[dest].max
+    end
+    local dest_accessible = true
+    if bag_org.is_bag_currently_accessible then
+        dest_accessible = bag_org.is_bag_currently_accessible(dest)
+    end
+    local hint
+    if not dest_accessible then
+        hint = dest .. ' is not unlocked from your current location. Talk to Marston (Mog Garden), a Nomad Moogle, or a Porter Moogle to unlock ' .. dest .. '.'
+    elseif dest_max and dest_used and dest_used >= dest_max then
+        hint = dest .. ' is full (' .. dest_used .. '/' .. dest_max .. '). Move something out first.'
+    else
+        hint = dest .. ' (' .. tostring(dest_used or '?') .. '/' .. tostring(dest_max or '?')
+            .. ') -- item may be locked / rare-exclusive duplicate / quest item.'
+    end
+    windower.add_to_chat(207, 'GSUI: ' .. item_name .. ' did not move -> ' .. hint)
+    if dbg then
+        dbg('move-fail', 'single: ' .. item_name .. ' to ' .. dest
+            .. ' / accessible=' .. tostring(dest_accessible)
+            .. ' / used=' .. tostring(dest_used)
+            .. ' / max=' .. tostring(dest_max))
+    end
+end
+
+local function report_bulk_move_failure(unmoved_count, dest)
+    local dest_used, dest_max = nil, nil
+    local ok_snap, snap_items = pcall(windower.ffxi.get_items)
+    if ok_snap and snap_items and snap_items[dest] then
+        dest_used = snap_items[dest].count
+        dest_max  = snap_items[dest].max
+    end
+    local dest_accessible = true
+    if bag_org.is_bag_currently_accessible then
+        dest_accessible = bag_org.is_bag_currently_accessible(dest)
+    end
+    local hint
+    if not dest_accessible then
+        hint = dest .. ' is not unlocked from your current location. Talk to Marston (Mog Garden), a Nomad Moogle, or a Porter Moogle to unlock it.'
+    elseif dest_max and dest_used and dest_used >= dest_max then
+        hint = dest .. ' is full (' .. dest_used .. '/' .. dest_max .. '). Move something out first.'
+    else
+        hint = 'destination ' .. dest .. ' (' .. tostring(dest_used or '?')
+            .. '/' .. tostring(dest_max or '?')
+            .. ') -- item may be locked / rare-exclusive duplicate / quest item, or the server-side verify window timed out.'
+    end
+    windower.add_to_chat(207, 'GSUI: ' .. unmoved_count .. ' item(s) did not move -> ' .. hint)
+    if dbg then
+        dbg('move-fail', 'bulk: ' .. unmoved_count .. ' to ' .. dest
+            .. ' / accessible=' .. tostring(dest_accessible)
+            .. ' / used=' .. tostring(dest_used)
+            .. ' / max=' .. tostring(dest_max))
+    end
+end
+
 -- Organizer: scan all bags (unfiltered) and detect issues
 local function refresh_organizer()
     if not initialized or _zoning then
@@ -758,7 +825,7 @@ local function handle_kb_action(action)
                     if moved > 0 then
                         windower.add_to_chat(207, 'GSUI: moved ' .. moved .. 'x ' .. item.name .. ' -> ' .. dest)
                     else
-                        windower.add_to_chat(207, 'GSUI: 0 of ' .. item.name .. ' moved to ' .. dest .. ' -- please stand in your Mog House or at a Nomad/Porter Moogle that has unlocked that bag.')
+                        report_single_move_failure(item.name, dest)
                     end
                 -- Wait per move bumped 0.5 -> 1.5 to cover the two-leg
                 -- bag-to-bag path (each item is now pull-to-inventory +
@@ -791,7 +858,7 @@ local function handle_kb_action(action)
                 if moved > 0 then
                     windower.add_to_chat(207, 'GSUI: moved ' .. moved .. 'x ' .. item.name .. ' (' .. item.bag_name .. ' -> ' .. dest .. ')')
                 else
-                    windower.add_to_chat(207, 'GSUI: ' .. item.name .. ' did not move -- please stand in your Mog House or at a Nomad/Porter Moogle that has unlocked ' .. (bag_org.is_mog_bag(dest) and dest or item.bag_name) .. '.')
+                    report_single_move_failure(item.name, bag_org.is_mog_bag(dest) and dest or item.bag_name)
                 end
             end, 1.5)
         end
@@ -960,7 +1027,7 @@ local function handle_click(mx, my)
                     windower.add_to_chat(207, 'GSUI: moved -> ' .. dest .. ': ' .. table.concat(moved_lines, ', '))
                 end
                 if unmoved_count > 0 then
-                    windower.add_to_chat(207, 'GSUI: ' .. unmoved_count .. ' item(s) did not move -- please stand in your Mog House or at a Nomad/Porter Moogle that has unlocked the bag.')
+                    report_bulk_move_failure(unmoved_count, dest)
                 end
             end, 1 + queued * 1.5)
         else
@@ -1504,7 +1571,7 @@ local function handle_mouse_up(mx, my)
                             if moved > 0 then
                                 windower.add_to_chat(207, 'GSUI: moved ' .. moved .. 'x ' .. item.name .. ' -> ' .. dest)
                             else
-                                windower.add_to_chat(207, 'GSUI: 0 of ' .. item.name .. ' moved to ' .. dest .. ' -- please stand in your Mog House or at a Nomad/Porter Moogle that has unlocked that bag.')
+                                report_single_move_failure(item.name, dest)
                             end
                         end, 1 + move_count * 1.5)
                     else
@@ -1532,7 +1599,7 @@ local function handle_mouse_up(mx, my)
                         if moved > 0 then
                             windower.add_to_chat(207, 'GSUI: moved ' .. moved .. 'x ' .. item.name .. ' (' .. item.bag_name .. ' -> ' .. dest .. ')')
                         else
-                            windower.add_to_chat(207, 'GSUI: ' .. item.name .. ' did not move -- please stand in your Mog House or at a Nomad/Porter Moogle that has unlocked ' .. (bag_org.is_mog_bag(dest) and dest or item.bag_name) .. '.')
+                            report_single_move_failure(item.name, bag_org.is_mog_bag(dest) and dest or item.bag_name)
                         end
                     end, 1.5)
                 end
@@ -2167,7 +2234,7 @@ windower.register_event('mouse', function(type, x, y, delta, blocked)
                             windower.add_to_chat(207, 'GSUI: moved -> ' .. dest .. ': ' .. table.concat(moved_lines, ', '))
                         end
                         if unmoved_count > 0 then
-                            windower.add_to_chat(207, 'GSUI: ' .. unmoved_count .. ' item(s) did not move -- please stand in your Mog House or at a Nomad/Porter Moogle that has unlocked the bag.')
+                            report_bulk_move_failure(unmoved_count, dest)
                         end
                     end, 1 + queued * 1.5)
                 end
