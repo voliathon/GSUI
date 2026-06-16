@@ -62,19 +62,51 @@ local bag_org = require('libs/bag_organizer')
 --     start_move_pump() in the same frame.
 -- ----------------------------------------------------------------------------
 local _move_pump_active = false
--- Set true on incoming zone packet (0x00B), cleared 6 s later. Any
--- coroutine that touches windower.ffxi.* must early-out when this is
--- set or it can crash Windower when get_items() returns a partial
+-- Set true on incoming zone packet (0x00B). Cleared by 0x00A (zone-finish)
+-- AFTER windower.ffxi.get_items() returns a valid inventory snapshot, or
+-- by a 30 s safety ceiling if 0x00A never arrives (disconnect / bad
+-- packet). Any coroutine that touches windower.ffxi.* must early-out when
+-- this is set or it can crash Windower when get_items() returns a partial
 -- snapshot mid-zone.
 local _zoning = false
+local _zoning_session = 0  -- incremented on each 0x00B; lets the safety
+                           -- timer / pending checks tell if they're still
+                           -- the current zone's deadlines or stale.
+
+-- =============================================================================
+-- Diagnostic breadcrumb log. Lines append to GSUI/debug.log; file is reset
+-- on every addon load so each Windower session starts fresh. The file is
+-- opened+closed per write so the last line hits disk BEFORE any native
+-- d3d8.dll AV that would crash the process. Tail debug.log after a crash
+-- to see what code path was active.
+--
+-- Disable by flipping _dbg_enabled to false.
+-- =============================================================================
+local _dbg_enabled = true
+local _dbg_path = nil   -- set in 'load' once windower.addon_path is known
+local function dbg(tag, msg)
+    if not _dbg_enabled or not _dbg_path then return end
+    local ok, f = pcall(io.open, _dbg_path, 'a')
+    if ok and f then
+        local ts = os.date('%H:%M:%S')
+        local clk = string.format('%.3f', os.clock())
+        f:write(ts .. ' (' .. clk .. ') [' .. tag .. '] ' .. (msg or '') .. '\n')
+        f:close()
+    end
+end
 
 local function start_move_pump()
     if _move_pump_active then return end
-    if _zoning then return end
+    if _zoning then
+        dbg('pump', 'start blocked: _zoning=true')
+        return
+    end
     if not bag_org.is_moving() then return end
+    dbg('pump', 'started')
     _move_pump_active = true
     local function tick()
         if _zoning then
+            dbg('pump', 'tick aborted: _zoning=true')
             _move_pump_active = false
             return
         end
@@ -82,6 +114,7 @@ local function start_move_pump()
         if more then
             coroutine.schedule(tick, 0.1)
         else
+            dbg('pump', 'queue drained')
             _move_pump_active = false
         end
     end
@@ -261,7 +294,11 @@ local show_org_scattered
 
 -- Organizer: scan all bags (unfiltered) and detect issues
 local function refresh_organizer()
-    if not initialized or _zoning then return end
+    if not initialized or _zoning then
+        if _zoning then dbg('refresh', 'blocked: _zoning=true (this is GOOD - guard caught it)') end
+        return
+    end
+    dbg('refresh', 'refresh_organizer entered')
     local all_bag_items = {}
     local bag_data = {}
     local all_bags = scanner.get_all_bag_names()
@@ -1526,6 +1563,19 @@ end
 
 -- Events
 windower.register_event('load', function()
+    -- Reset the diagnostic log on every Windower start so each session
+    -- begins with a clean file. If the file is huge from a long previous
+    -- session that didn't reload, this keeps it bounded.
+    _dbg_path = windower.addon_path .. 'debug.log'
+    pcall(function()
+        local f = io.open(_dbg_path, 'w')
+        if f then
+            f:write('# GSUI debug log -- session start ' .. os.date() .. '\n')
+            f:close()
+        end
+    end)
+    dbg('load', 'addon loaded, debug log armed')
+
     -- Bind the toggle hotkey through Windower's bind system. This respects
     -- FFXI's chat-input state automatically -- no manual chat_open guard
     -- needed, and the bare-letter conflict that broke macros is gone.
@@ -1725,6 +1775,7 @@ windower.register_event('login', function()
 end)
 
 windower.register_event('logout', function()
+    dbg('logout', 'event received, flipping guards')
     -- Same race-condition protection as the unload handler. Flip the
     -- guards first so any pending coroutine bails immediately, then
     -- pcall the cleanup so a partial failure doesn't strand UI
@@ -1759,6 +1810,7 @@ windower.register_event('unload', function()
     --      reload window). Re-use the _zoning guard since semantics
     --      are identical -- "stop touching game state until things
     --      have settled".
+    dbg('unload', 'event received, flipping guards before cleanup')
     initialized = false
     _zoning     = true               -- gates every other coroutine
     _move_pump_active = false        -- next tick will see this + bail
@@ -1869,28 +1921,64 @@ windower.register_event('incoming chunk', function(id, original, modified, injec
             end
         end
     elseif id == 0x00A then -- Zone finish
+        dbg('00A', 'zone-finish packet received, _zoning=' .. tostring(_zoning))
+        local my_session = _zoning_session
         coroutine.schedule(function()
-            if initialized then
-                -- Zone-based mog house detection as reliable fallback
-                local info = windower.ffxi.get_info()
-                if info then
-                    local zone = res.zones[info.zone]
-                    if zone and zone.name and zone.name:find('Residential') then
-                        bag_org.set_mog_house(true)
-                        ui.set_mog_house(true)
+            if not initialized then
+                dbg('00A', 'rebuild skipped: not initialized')
+                return
+            end
+            -- If a second zone fired in between, drop this stale rebuild
+            -- so it doesn't run against the new zone's half-loaded state.
+            if my_session ~= _zoning_session then
+                dbg('00A', 'rebuild skipped: stale session (got ' .. my_session .. ', now ' .. _zoning_session .. ')')
+                return
+            end
+            -- Zone-based mog house detection as reliable fallback
+            local info = windower.ffxi.get_info()
+            if info then
+                local zone = res.zones[info.zone]
+                if zone and zone.name and zone.name:find('Residential') then
+                    bag_org.set_mog_house(true)
+                    ui.set_mog_house(true)
+                end
+            end
+            ui.build()
+            refresh_data()
+            if ui.get_mode() == 'organizer' then
+                refresh_organizer()
+            end
+            if settings.visible == false then
+                ui.hide()
+            end
+            -- Only clear _zoning AFTER the rebuild has completed against a
+            -- valid inventory snapshot. If the snapshot still looks empty
+            -- (max == 0 or nil), keep _zoning armed and retry shortly.
+            local snap = windower.ffxi.get_items()
+            local snap_ok = snap and snap.inventory
+                            and (snap.inventory.max or 0) > 0
+            if snap_ok then
+                dbg('00A', 'rebuild ok, snap valid, clearing _zoning')
+                _zoning = false
+            else
+                dbg('00A', 'snap invalid (max='..tostring(snap and snap.inventory and snap.inventory.max)..
+                           '), keeping _zoning armed, retrying in 1s')
+                coroutine.schedule(function()
+                    if my_session ~= _zoning_session then return end
+                    local s = windower.ffxi.get_items()
+                    if s and s.inventory and (s.inventory.max or 0) > 0 then
+                        dbg('00A-retry', 'snap valid, clearing _zoning')
+                        _zoning = false
+                    else
+                        dbg('00A-retry', 'snap STILL invalid, will rely on safety ceiling')
                     end
-                end
-                ui.build()
-                refresh_data()
-                if ui.get_mode() == 'organizer' then
-                    refresh_organizer()
-                end
-                if settings.visible == false then
-                    ui.hide()
-                end
+                end, 1)
             end
         end, 3)
     elseif id == 0x00B then -- Zoning
+        _zoning_session = _zoning_session + 1
+        local my_session = _zoning_session
+        dbg('00B', 'zone packet received, session=' .. my_session)
         bag_org.set_mog_house(false)
         ui.set_mog_house(false)
         ui.hide()
@@ -1899,18 +1987,25 @@ windower.register_event('incoming chunk', function(id, original, modified, injec
         -- the queue references is about to be invalidated by the zone,
         -- and pending verify-coroutines that call refresh_organizer()
         -- could crash when get_items() returns partial / nil data
-        -- mid-zone. Zoning blackout typically lasts a few seconds; we
-        -- just wipe state and the user can restart any move once they
-        -- land in the new zone.
+        -- mid-zone.
         bag_org.clear_queue()
         _move_pump_active = false           -- stops the tick coroutine
         _zoning = true                      -- guard for any other coroutine
         if ui.clear_selection then ui.clear_selection() end
-        -- Re-arm after the typical zone window. If a second zone
-        -- happens inside this window, this scheduler fires after the
-        -- second zone too, which is fine -- it just keeps _zoning
-        -- false-as-soon-as-possible.
-        coroutine.schedule(function() _zoning = false end, 6)
+        -- Safety ceiling: if 0x00A never arrives (disconnect, missed
+        -- packet, etc.) force _zoning false after a long timeout so the
+        -- UI doesn't stay frozen forever. 30s is generous for the worst
+        -- long-zone (Reisenjima, Vagary, Dynamis Divergence) and short
+        -- enough that a forgotten _zoning isn't user-visible for long.
+        -- Session check makes sure this only fires for the LATEST zone,
+        -- not a stale prior-zone safety.
+        coroutine.schedule(function()
+            if my_session ~= _zoning_session then return end
+            if _zoning then
+                dbg('safety', '30s ceiling reached without 0x00A clear, forcing _zoning=false')
+                _zoning = false
+            end
+        end, 30)
     end
 end)
 
