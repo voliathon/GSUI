@@ -325,13 +325,16 @@ local _wardrobe_bags = {
 local function is_wardrobe(bag_name)
     return _wardrobe_bags[bag_name] == true
 end
--- res.items[id].slots is a bitmask of equipment slots this item can
--- occupy. 0 (or missing) means the item isn't equippable -- consumables,
--- crafting mats, key items, furniture, etc.
+-- res.items[id].slots is a Set in Windower's decoded resources (table,
+-- not a number), so comparing it with > 0 throws "attempt to compare
+-- number with nil". Use res.items[id].category instead -- it's a stable
+-- string ("Weapon", "Armor", "General", "Usable", etc.).
 local function is_equipment(item_id)
     if not item_id then return false end
     local def = res.items[item_id]
-    return def and def.slots and def.slots > 0 or false
+    if not def then return false end
+    local cat = def.category
+    return cat == 'Weapon' or cat == 'Armor'
 end
 
 -- Print a smart "N items did not move" message that diagnoses the
