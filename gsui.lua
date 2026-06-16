@@ -1005,17 +1005,25 @@ local function handle_click(mx, my)
         if ui.selection_count() > 0 then
             local dest = hit.bag_name
             local selected = ui.get_selected_items()
-            local snapshots = {}
+            -- Snapshot the DESTINATION count before queueing. The verify
+            -- compares dest.count post-move vs this baseline -- that's
+            -- the only number that says definitively whether items
+            -- landed, regardless of overlapping bulks rearranging source
+            -- slots or bag-to-bag legs leaving items briefly in inventory.
+            local dest_pre = 0
+            do
+                local ok_snap, snap_items = pcall(windower.ffxi.get_items)
+                if ok_snap and snap_items and snap_items[dest] then
+                    dest_pre = snap_items[dest].count or 0
+                end
+            end
+            local items_attempted = {}
             local queued, skipped = 0, 0
             for _, item in ipairs(selected) do
                 if item.bag_name == dest then
                     skipped = skipped + 1
                 else
-                    snapshots[#snapshots+1] = {
-                        bag = item.bag_name, slot = item.bag_index,
-                        id = item.id, name = item.name,
-                        pre = item.count or 1,
-                    }
+                    items_attempted[#items_attempted+1] = (item.count or 1) .. 'x ' .. item.name
                     bag_org.queue_move(item.bag_name, item.bag_index, dest, item.count, item.id)
                     queued = queued + 1
                 end
@@ -1025,7 +1033,7 @@ local function handle_click(mx, my)
                           .. (skipped > 0 and ' (' .. skipped .. ' skipped)' or ''))
             _bulk_op_id = _bulk_op_id + 1
             local my_op = _bulk_op_id
-            dbg('bulk', 'A start op=' .. my_op .. ' queued=' .. queued .. ' dest=' .. dest)
+            dbg('bulk', 'A start op=' .. my_op .. ' queued=' .. queued .. ' dest=' .. dest .. ' dest_pre=' .. dest_pre)
             start_move_pump()
             coroutine.schedule(function()
                 if not initialized or _zoning then return end
@@ -1035,27 +1043,24 @@ local function handle_click(mx, my)
                 end
                 dbg('bulk', 'A verify firing op=' .. my_op)
                 refresh_organizer()
-                local moved_lines, unmoved_count = {}, 0
-                for _, snap in ipairs(snapshots) do
-                    local post = 0
-                    for _, it in ipairs(_org_all_bag_items[snap.bag] or {}) do
-                        if it.id == snap.id and it.bag_index == snap.slot then
-                            post = it.count
-                            break
-                        end
-                    end
-                    local moved = snap.pre - post
-                    if moved > 0 then
-                        moved_lines[#moved_lines+1] = moved .. 'x ' .. snap.name
-                    else
-                        unmoved_count = unmoved_count + 1
-                    end
+                local dest_post = 0
+                local ok_snap, snap_items = pcall(windower.ffxi.get_items)
+                if ok_snap and snap_items and snap_items[dest] then
+                    dest_post = snap_items[dest].count or 0
                 end
-                if #moved_lines > 0 then
-                    windower.add_to_chat(207, 'GSUI: moved -> ' .. dest .. ': ' .. table.concat(moved_lines, ', '))
-                end
-                if unmoved_count > 0 then
-                    report_bulk_move_failure(unmoved_count, dest)
+                local delta = dest_post - dest_pre
+                dbg('bulk', 'A op=' .. my_op .. ' dest_pre=' .. dest_pre
+                            .. ' dest_post=' .. dest_post .. ' delta=' .. delta
+                            .. ' queued=' .. queued)
+                if delta >= queued then
+                    windower.add_to_chat(207, 'GSUI: moved -> ' .. dest .. ': '
+                        .. table.concat(items_attempted, ', '))
+                elseif delta > 0 then
+                    windower.add_to_chat(207, 'GSUI: partial move -> ' .. dest
+                        .. ': ' .. delta .. ' of ' .. queued .. ' items landed.')
+                    report_bulk_move_failure(queued - delta, dest)
+                else
+                    report_bulk_move_failure(queued, dest)
                 end
             end, 1 + queued * 1.5)
         else
@@ -2217,19 +2222,23 @@ windower.register_event('mouse', function(type, x, y, delta, blocked)
                 if #selected == 0 then
                     ui.set_status('No items selected. Right-click items first.')
                 else
-                    -- Snapshot each selected item's pre-count keyed by
-                    -- (bag, slot) so we can diff per-item after.
-                    local snapshots = {}
+                    -- Snapshot the DESTINATION count before queueing.
+                    -- See site A for why this is more robust than the old
+                    -- source-slot lookup.
+                    local dest_pre = 0
+                    do
+                        local ok_snap, snap_items = pcall(windower.ffxi.get_items)
+                        if ok_snap and snap_items and snap_items[dest] then
+                            dest_pre = snap_items[dest].count or 0
+                        end
+                    end
+                    local items_attempted = {}
                     local queued, skipped = 0, 0
                     for _, item in ipairs(selected) do
                         if item.bag_name == dest then
                             skipped = skipped + 1
                         else
-                            snapshots[#snapshots+1] = {
-                                bag = item.bag_name, slot = item.bag_index,
-                                id = item.id, name = item.name,
-                                pre = item.count or 1,
-                            }
+                            items_attempted[#items_attempted+1] = (item.count or 1) .. 'x ' .. item.name
                             bag_org.queue_move(item.bag_name, item.bag_index, dest, item.count, item.id)
                             queued = queued + 1
                         end
@@ -2238,7 +2247,7 @@ windower.register_event('mouse', function(type, x, y, delta, blocked)
                     ui.set_status('Moving ' .. queued .. ' item(s) -> ' .. dest .. (skipped > 0 and ' (' .. skipped .. ' skipped)' or ''))
                     _bulk_op_id = _bulk_op_id + 1
                     local my_op = _bulk_op_id
-                    dbg('bulk', 'B start op=' .. my_op .. ' queued=' .. queued .. ' dest=' .. dest)
+                    dbg('bulk', 'B start op=' .. my_op .. ' queued=' .. queued .. ' dest=' .. dest .. ' dest_pre=' .. dest_pre)
                     -- Drain the queue. Without this nothing ever moves;
                     -- bag_org.queue_move only appends to the queue.
                     start_move_pump()
@@ -2250,27 +2259,24 @@ windower.register_event('mouse', function(type, x, y, delta, blocked)
                         end
                         dbg('bulk', 'B verify firing op=' .. my_op)
                         refresh_organizer()
-                        local moved_lines, unmoved_count = {}, 0
-                        for _, snap in ipairs(snapshots) do
-                            local post = 0
-                            for _, it in ipairs(_org_all_bag_items[snap.bag] or {}) do
-                                if it.id == snap.id and it.bag_index == snap.slot then
-                                    post = it.count
-                                    break
-                                end
-                            end
-                            local moved = snap.pre - post
-                            if moved > 0 then
-                                moved_lines[#moved_lines+1] = moved .. 'x ' .. snap.name
-                            else
-                                unmoved_count = unmoved_count + 1
-                            end
+                        local dest_post = 0
+                        local ok_snap, snap_items = pcall(windower.ffxi.get_items)
+                        if ok_snap and snap_items and snap_items[dest] then
+                            dest_post = snap_items[dest].count or 0
                         end
-                        if #moved_lines > 0 then
-                            windower.add_to_chat(207, 'GSUI: moved -> ' .. dest .. ': ' .. table.concat(moved_lines, ', '))
-                        end
-                        if unmoved_count > 0 then
-                            report_bulk_move_failure(unmoved_count, dest)
+                        local delta = dest_post - dest_pre
+                        dbg('bulk', 'B op=' .. my_op .. ' dest_pre=' .. dest_pre
+                                    .. ' dest_post=' .. dest_post .. ' delta=' .. delta
+                                    .. ' queued=' .. queued)
+                        if delta >= queued then
+                            windower.add_to_chat(207, 'GSUI: moved -> ' .. dest .. ': '
+                                .. table.concat(items_attempted, ', '))
+                        elseif delta > 0 then
+                            windower.add_to_chat(207, 'GSUI: partial move -> ' .. dest
+                                .. ': ' .. delta .. ' of ' .. queued .. ' items landed.')
+                            report_bulk_move_failure(queued - delta, dest)
+                        else
+                            report_bulk_move_failure(queued, dest)
                         end
                     end, 1 + queued * 1.5)
                 end
