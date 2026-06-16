@@ -261,6 +261,31 @@ local function make_text(content, x, y, size, r, g, b, bold)
     return t
 end
 
+-- Lazy-allocate the multi-select decoration stack for an inv cell.
+-- Called from refresh_inv_grid the first time a cell needs to render
+-- as selected. Subsequent calls early-out because the objects are
+-- cached on icon_data. The objects are NOT freed on deselect -- we
+-- just :hide() them like everything else. Worst case after the user
+-- has eventually right-clicked every cell: equivalent to the old
+-- eager-allocate count (192 objects). Typical case: only the few
+-- cells the user has ever selected accumulate their indicators,
+-- cutting d3d pressure roughly 4-10x at idle.
+local function ensure_select_indicators(icon_data)
+    if icon_data.select_bg then return end
+    local ix, iy = icon_data.x, icon_data.y
+    local sb = make_bg(ix, iy, ICON_SIZE, ICON_SIZE, 0, 40, 90, 160)
+    local sbo = make_bg(ix - 1, iy - 1, ICON_SIZE + 2, ICON_SIZE + 2, 0, 95, 200, 255)
+    sb:hide()
+    sbo:hide()
+    -- Plain ASCII "v" -- Windower text renderer may be missing the
+    -- unicode checkmark glyph and would draw an empty box.
+    local cm = make_text('v', ix + ICON_SIZE - 12, iy - 2, 14, 60, 220, 90, true)
+    cm:hide()
+    icon_data.select_bg     = sb
+    icon_data.select_border = sbo
+    icon_data.check_mark    = cm
+end
+
 local function show_element(el)
     if el and el.show then el:show() end
 end
@@ -553,43 +578,30 @@ function ui.build()
             local ix = inv_x + col * CELL
             local iy = grid_y + row * CELL
             local idx = row * INV_COLS + col + 1
-            -- Multi-select indicator stack (built once per cell, shown
-            -- only when ui.is_selected(item) is true):
-            --   select_bg : full-cell accent-cyan square behind the icon
-            --   select_border : 1px brighter border framing the cell
-            --   check_mark : green "v" glyph pinned to the top-right corner
-            -- Built BEFORE the icon image so the icon paints on top of
-            -- the bg; the check mark is built AFTER so it overlays the
-            -- icon's top-right corner.
-            local select_bg     = make_bg(ix, iy, ICON_SIZE, ICON_SIZE, 0, 40, 90, 160)
-            local select_border = make_bg(ix - 1, iy - 1, ICON_SIZE + 2, ICON_SIZE + 2, 0, 95, 200, 255)
-            -- select_border is just an outer rect; the actual outlined
-            -- look comes from drawing select_bg on top of it (smaller by
-            -- 2 px on each side), but here we use them as two layered
-            -- rects: border first, then bg. Hidden by default.
-            select_bg:hide()
-            select_border:hide()
+            -- Only build the icon image up front. Multi-select indicators
+            -- (select_bg / select_border / check_mark) are created lazily
+            -- on first selection of this cell -- see ensure_select_indicators
+            -- below. Cuts the addon's d3d resource footprint by ~190
+            -- objects (3 per cell * 64 cells) at idle, which significantly
+            -- reduces the chance of hitting the d3d8 wrapper's stability
+            -- bug at high object counts. Once built they're cached for
+            -- the rest of the session, so subsequent selections of the
+            -- same cell are full-speed.
             local img = icon_handler.create_image({
                 color = { alpha = 0, red = 255, green = 255, blue = 255 },
                 size = { width = ICON_SIZE, height = ICON_SIZE },
                 pos = { x = ix, y = iy },
             })
-            -- Use a plain ASCII "v" instead of a unicode checkmark --
-            -- Windower's text renderer doesn't always have the U+2713
-            -- glyph in every installed font, and a missing glyph
-            -- renders as an empty box. "v" reads as a check at small
-            -- sizes and is universally available.
-            local check_mark = make_text('v', ix + ICON_SIZE - 12, iy - 2, 14, 60, 220, 90, true)
-            check_mark:hide()
             elements.inv_icons[idx] = {
                 image       = img,
-                select_bg   = select_bg,
-                select_border = select_border,
-                check_mark  = check_mark,
+                -- select_bg / select_border / check_mark intentionally
+                -- absent here; ensure_select_indicators fills them in
+                -- the first time this cell is highlighted.
                 x = ix, y = iy, item = nil, visible = false,
             }
         end
     end
+
 
     -- Scroll buttons
     local scroll_y = grid_y + inv_grid_h
@@ -1252,14 +1264,20 @@ function ui.refresh_inv_grid()
             local selected = ui.is_selected(item)
             pcall(function()
                 if selected then
+                    -- Lazy-build the decoration objects for this cell on
+                    -- first selection. Cached on icon_data thereafter.
+                    ensure_select_indicators(icon_data)
                     icon_data.select_border:alpha(220);     icon_data.select_border:show()
                     icon_data.select_bg:alpha(150);         icon_data.select_bg:show()
                     icon_data.check_mark:show()
                     icon_data.image:color(255, 240, 160)    -- mild yellow tint, redundant cue
                 else
-                    icon_data.select_border:hide()
-                    icon_data.select_bg:hide()
-                    icon_data.check_mark:hide()
+                    -- Deselect: only act on decorations that have ever
+                    -- been built (i.e. this cell has been selected at
+                    -- least once in this session).
+                    if icon_data.select_border then icon_data.select_border:hide() end
+                    if icon_data.select_bg     then icon_data.select_bg:hide()     end
+                    if icon_data.check_mark    then icon_data.check_mark:hide()    end
                     icon_data.image:color(255, 255, 255)
                 end
                 icon_data.image:update()
@@ -1269,8 +1287,9 @@ function ui.refresh_inv_grid()
             icon_data.visible = false
             icon_data.image:alpha(0)
             icon_data.image:hide()
-            -- Also hide selection overlays for empty cells -- otherwise a
-            -- leftover selection visual from a previous item would linger.
+            -- Hide leftover selection visuals if this cell ever had them
+            -- built. Cells whose user has never right-clicked don't
+            -- carry these references, hence the existence checks.
             if icon_data.select_border then icon_data.select_border:hide() end
             if icon_data.select_bg     then icon_data.select_bg:hide()     end
             if icon_data.check_mark    then icon_data.check_mark:hide()    end
