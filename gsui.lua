@@ -62,11 +62,22 @@ local bag_org = require('libs/bag_organizer')
 --     start_move_pump() in the same frame.
 -- ----------------------------------------------------------------------------
 local _move_pump_active = false
+-- Set true on incoming zone packet (0x00B), cleared 6 s later. Any
+-- coroutine that touches windower.ffxi.* must early-out when this is
+-- set or it can crash Windower when get_items() returns a partial
+-- snapshot mid-zone.
+local _zoning = false
+
 local function start_move_pump()
     if _move_pump_active then return end
+    if _zoning then return end
     if not bag_org.is_moving() then return end
     _move_pump_active = true
     local function tick()
+        if _zoning then
+            _move_pump_active = false
+            return
+        end
         local more = bag_org.process_queue()
         if more then
             coroutine.schedule(tick, 0.1)
@@ -250,7 +261,7 @@ local show_org_scattered
 
 -- Organizer: scan all bags (unfiltered) and detect issues
 local function refresh_organizer()
-    if not initialized then return end
+    if not initialized or _zoning then return end
     local all_bag_items = {}
     local bag_data = {}
     local all_bags = scanner.get_all_bag_names()
@@ -462,7 +473,7 @@ local function save_position()
 end
 
 local function refresh_data()
-    if not initialized then return end
+    if not initialized or _zoning then return end
     if not custom_set_active then
         local eq = scanner.scan_equipment()
         ui.update_equipment(eq)
@@ -700,7 +711,7 @@ local function handle_kb_action(action)
                 ui.set_status('Consolidating ' .. item.name .. ' -> ' .. dest)
                 start_move_pump()
                 coroutine.schedule(function()
-                    if not initialized then return end
+                    if not initialized or _zoning then return end
                     refresh_organizer()
                     local dest_after = 0
                     for _, it in ipairs(_org_all_bag_items[dest] or {}) do
@@ -730,7 +741,7 @@ local function handle_kb_action(action)
             start_move_pump()
             ui.set_status(item.name .. ' -> ' .. dest)
             coroutine.schedule(function()
-                if not initialized then return end
+                if not initialized or _zoning then return end
                 refresh_organizer()
                 local src_after = 0
                 for _, it in ipairs(_org_all_bag_items[item.bag_name] or {}) do
@@ -820,7 +831,7 @@ local function handle_click(mx, my)
         local fired = 0
         for i, bag_name in ipairs(targets) do
             coroutine.schedule(function()
-                if not initialized then return end
+                if not initialized or _zoning then return end
                 bag_org.sort_bag(bag_name)
             end, (i - 1) * 0.4)
             fired = fired + 1
@@ -829,7 +840,7 @@ local function handle_click(mx, my)
         ui.set_status('Stacking ' .. label)
         windower.add_to_chat(207, 'GSUI: stacking ' .. label .. '...')
         coroutine.schedule(function()
-            if not initialized then return end
+            if not initialized or _zoning then return end
             refresh_organizer()
             windower.add_to_chat(207, 'GSUI: stack complete for ' .. label .. '.')
         end, fired * 0.4 + 1.0)
@@ -890,7 +901,7 @@ local function handle_click(mx, my)
                           .. (skipped > 0 and ' (' .. skipped .. ' skipped)' or ''))
             start_move_pump()
             coroutine.schedule(function()
-                if not initialized then return end
+                if not initialized or _zoning then return end
                 refresh_organizer()
                 local moved_lines, unmoved_count = {}, 0
                 for _, snap in ipairs(snapshots) do
@@ -1446,7 +1457,7 @@ local function handle_mouse_up(mx, my)
                         ui.set_status('Consolidating ' .. item.name .. ' -> ' .. dest)
                         start_move_pump()
                         coroutine.schedule(function()
-                            if not initialized then return end
+                            if not initialized or _zoning then return end
                             refresh_organizer()
                             local dest_after = 0
                             for _, it in ipairs(_org_all_bag_items[dest] or {}) do
@@ -1471,7 +1482,7 @@ local function handle_mouse_up(mx, my)
                     start_move_pump()
                     ui.set_status(item.name .. ' -> ' .. dest)
                     coroutine.schedule(function()
-                        if not initialized then return end
+                        if not initialized or _zoning then return end
                         refresh_organizer()
                         local src_after = 0
                         for _, it in ipairs(_org_all_bag_items[item.bag_name] or {}) do
@@ -1736,7 +1747,7 @@ end)
 
 -- Packet handling for real-time updates
 windower.register_event('incoming chunk', function(id, original, modified, injected, blocked)
-    if not initialized then return end
+    if not initialized or _zoning then return end
 
     if id == 0x050 or id == 0x020 or id == 0x01F or id == 0x01E or id == 0x01B then
         -- First packet of a new burst: set the hard deadline so we
@@ -1853,11 +1864,27 @@ windower.register_event('incoming chunk', function(id, original, modified, injec
         ui.set_mog_house(false)
         ui.hide()
         sync_kb_binds()
+        -- Anything in flight needs to die here. The inventory snapshot
+        -- the queue references is about to be invalidated by the zone,
+        -- and pending verify-coroutines that call refresh_organizer()
+        -- could crash when get_items() returns partial / nil data
+        -- mid-zone. Zoning blackout typically lasts a few seconds; we
+        -- just wipe state and the user can restart any move once they
+        -- land in the new zone.
+        bag_org.clear_queue()
+        _move_pump_active = false           -- stops the tick coroutine
+        _zoning = true                      -- guard for any other coroutine
+        if ui.clear_selection then ui.clear_selection() end
+        -- Re-arm after the typical zone window. If a second zone
+        -- happens inside this window, this scheduler fires after the
+        -- second zone too, which is fine -- it just keeps _zoning
+        -- false-as-soon-as-possible.
+        coroutine.schedule(function() _zoning = false end, 6)
     end
 end)
 
 windower.register_event('outgoing chunk', function(id, original, modified, injected, blocked)
-    if not initialized then return end
+    if not initialized or _zoning then return end
     if id == 0x100 then -- Job change
         if not pending_refresh then
             refresh_deadline = os.clock() + 1.0
@@ -1869,7 +1896,7 @@ end)
 
 -- Job change event: refresh after server has updated player data
 windower.register_event('job change', function()
-    if not initialized then return end
+    if not initialized or _zoning then return end
     coroutine.schedule(function()
         if initialized then
             custom_set_active = false
@@ -1977,7 +2004,7 @@ windower.register_event('mouse', function(type, x, y, delta, blocked)
                     -- bag_org.queue_move only appends to the queue.
                     start_move_pump()
                     coroutine.schedule(function()
-                        if not initialized then return end
+                        if not initialized or _zoning then return end
                         refresh_organizer()
                         local moved_lines, unmoved_count = {}, 0
                         for _, snap in ipairs(snapshots) do
@@ -2089,7 +2116,7 @@ windower.register_event('keyboard', function(dik, pressed, flags, blocked)
 end)
 
 windower.register_event('prerender', function()
-    if not initialized then return end
+    if not initialized or _zoning then return end
     if pending_refresh then
         local now = os.clock()
         if (now - refresh_timer) > 0.3 or now > refresh_deadline then
@@ -2129,7 +2156,7 @@ end)
 
 -- Status change (hide on cutscene)
 windower.register_event('status change', function(new_status_id)
-    if not initialized then return end
+    if not initialized or _zoning then return end
     if new_status_id == 4 then
         ui.hide()
         sync_kb_binds()

@@ -210,6 +210,14 @@ end
 function organizer.process_queue()
     if #move_queue == 0 then return false end
     if os.clock() - move_timer < MOVE_DELAY then return true end
+    -- Bail without consuming the queue if the inventory snapshot isn't
+    -- valid yet -- happens during zoning, immediately after //gs reload,
+    -- and a few other client-side blackout windows. Firing get_item/
+    -- put_item with a stale-slot index here has crashed Windower.
+    local snap = windower.ffxi.get_items()
+    if not snap or not snap.inventory or (snap.inventory.max or 0) == 0 then
+        return true                          -- keep ticks coming
+    end
     local move = table.remove(move_queue, 1)
     local bag_ids = scanner.get_all_bag_ids()
     local src_id = bag_ids[move.src_bag]
@@ -250,6 +258,14 @@ end
 
 function organizer.is_moving()
     return #move_queue > 0
+end
+
+-- Wipe everything in the queue without sending packets. Called from
+-- the zoning event handler (0x00B incoming) so we don't fire put_item
+-- / get_item calls against an inventory snapshot the server has just
+-- invalidated -- those calls have crashed Windower in the past.
+function organizer.clear_queue()
+    while #move_queue > 0 do table.remove(move_queue) end
 end
 
 function organizer.clear_queue()
