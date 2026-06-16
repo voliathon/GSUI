@@ -142,29 +142,71 @@ function organizer.find_scattered(all_bag_items)
     return scattered
 end
 
--- Queue an item move between bags
-function organizer.queue_move(src_bag, src_index, dest_bag, count)
-    table.insert(move_queue, {
-        src_bag=src_bag, src_index=src_index,
-        dest_bag=dest_bag, count=count,
-    })
+-- Queue an item move between bags.
+--
+-- One-leg case (src OR dest is inventory) -- uses Windower's native
+-- get_item / put_item in process_queue.
+--
+-- Two-leg case (neither side is inventory, e.g. wardrobe -> wardrobe2,
+-- satchel -> sack) -- the legacy 0x029 packet for direct bag-to-bag
+-- has been silently rejected by the server since an SE update, so
+-- nothing actually moved. We now SPLIT it into two queued legs that
+-- both go through inventory:
+--     leg 1: get_item(src_bag, src_index)   -> lands in inventory
+--     leg 2: put_item(dest_bag, ???, count) <- ??? is the new inventory
+--            slot, looked up by item_id at execution time because the
+--            destination index isn't known until leg 1 has actually
+--            run server-side.
+-- item_id is therefore REQUIRED for two-leg moves so leg 2 can find
+-- the item again in inventory.
+function organizer.queue_move(src_bag, src_index, dest_bag, count, item_id)
+    if src_bag ~= 'inventory' and dest_bag ~= 'inventory' then
+        table.insert(move_queue, {
+            src_bag = src_bag, src_index = src_index,
+            dest_bag = 'inventory', count = count,
+            item_id = item_id,
+        })
+        table.insert(move_queue, {
+            src_bag = 'inventory', src_index = nil,
+            dest_bag = dest_bag, count = count,
+            item_id = item_id,
+        })
+    else
+        table.insert(move_queue, {
+            src_bag = src_bag, src_index = src_index,
+            dest_bag = dest_bag, count = count,
+            item_id = item_id,
+        })
+    end
 end
 
 -- Process one move per tick with throttle.
 --
--- We prefer Windower's native item-movement API over raw 0x029 packet
--- injection. The native calls stay in sync with whatever the current
--- Windower / FFXI client expects (HMAC fields, extra padding bytes,
--- Target Index conventions, etc.); the hand-rolled 0x029 we used to ship
--- was silently rejected by the server after a SE update -- packet fired,
--- both bags enabled, zero items moved.
---
+-- Windower's native item-movement API:
 --   get_item(bag_id, slot, count)  -- pulls FROM `bag_id` slot INTO inventory
 --   put_item(bag_id, slot, count)  -- pushes FROM inventory slot INTO `bag_id`
 --
--- Bag-to-bag with neither side being inventory falls back to the legacy
--- 0x029 packet (no native API for that, and FFXI itself routes through
--- inventory in the menu).
+-- For a leg whose source is 'inventory' but src_index is nil, we look
+-- the item up in inventory by item_id (used by the second leg of a
+-- bag-to-bag move, which only knows what item it pushed to inventory
+-- in the first leg). Highest-index match wins -- new arrivals to
+-- inventory go to the lowest free slot, so the original copies (if
+-- any) sit lower and the one we want is the most recently added.
+local function find_inventory_slot(item_id)
+    if not item_id then return nil end
+    local items = windower.ffxi.get_items()
+    if not items or not items.inventory then return nil end
+    local inv = items.inventory
+    local found = nil
+    for i = 1, (inv.max or 80) do
+        local it = inv[i]
+        if it and it.id == item_id then
+            found = i  -- keep walking; we want the highest matching slot
+        end
+    end
+    return found
+end
+
 function organizer.process_queue()
     if #move_queue == 0 then return false end
     if os.clock() - move_timer < MOVE_DELAY then return true end
@@ -174,18 +216,18 @@ function organizer.process_queue()
     local dest_id = bag_ids[move.dest_bag]
     if src_id and dest_id then
         if move.dest_bag == 'inventory' then
+            -- pull from bag into inventory
             windower.ffxi.get_item(src_id, move.src_index, move.count)
         elseif move.src_bag == 'inventory' then
-            windower.ffxi.put_item(dest_id, move.src_index, move.count)
-        else
-            local p = packets.new('outgoing', 0x029)
-            p['Count'] = move.count
-            p['Bag'] = src_id
-            p['Target Bag'] = dest_id
-            p['Current Index'] = move.src_index
-            p['Target Index'] = 0x52
-            packets.inject(p)
+            -- push from inventory into bag.  src_index may be nil if
+            -- this is leg-2 of a bag-to-bag (the new inventory slot
+            -- isn't known when we queued it). Look it up by item id.
+            local inv_slot = move.src_index or find_inventory_slot(move.item_id)
+            if inv_slot then
+                windower.ffxi.put_item(dest_id, inv_slot, move.count)
+            end
         end
+        -- (No more 0x029 fallback. Two-leg path in queue_move handles it.)
     end
     move_timer = os.clock()
     return #move_queue > 0

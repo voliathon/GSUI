@@ -41,6 +41,42 @@ local scanner = require('libs/inventory_scanner')
 local set_gen = require('libs/set_generator')
 local icon_handler = require('libs/icon_handler')
 local bag_org = require('libs/bag_organizer')
+
+-- ----------------------------------------------------------------------------
+-- Move-queue pump
+--
+-- bag_org.queue_move() just appends to an in-memory list -- the actual
+-- get_item / put_item / 0x029 packet only fires from bag_org.process_queue(),
+-- and NOTHING was calling it. So bulk-move click handlers looked correct
+-- but items never left their source slot. This pump fixes that:
+--
+--   * start_move_pump() schedules a self-rescheduling tick that calls
+--     process_queue() every 0.1 s.
+--   * process_queue() itself enforces the 0.5 s MOVE_DELAY throttle on
+--     real packet emission, so the 0.1 s tick is just our "is it time yet"
+--     poller. Server-side rate-limiting is handled by the bag_org module.
+--   * When process_queue returns false (queue drained), the pump
+--     deactivates so we don't spin a forever-coroutine when idle.
+--   * A single _move_pump_active guard ensures we never run two pumps in
+--     parallel even if several click handlers fire queue_move()+
+--     start_move_pump() in the same frame.
+-- ----------------------------------------------------------------------------
+local _move_pump_active = false
+local function start_move_pump()
+    if _move_pump_active then return end
+    if not bag_org.is_moving() then return end
+    _move_pump_active = true
+    local function tick()
+        local more = bag_org.process_queue()
+        if more then
+            coroutine.schedule(tick, 0.1)
+        else
+            _move_pump_active = false
+        end
+    end
+    coroutine.schedule(tick, 0.1)
+end
+
 local stat_parser = require('libs/stat_parser')
 -- Augment decoder for /check examination packets. Used by the 0x0C9
 -- listener below to turn a player's ExtData blob into a list of
@@ -654,7 +690,7 @@ local function handle_kb_action(action)
                 if bag_name ~= dest then
                     for _, bag_item in ipairs(items) do
                         if bag_item.id == item.id then
-                            bag_org.queue_move(bag_name, bag_item.bag_index, dest, bag_item.count)
+                            bag_org.queue_move(bag_name, bag_item.bag_index, dest, bag_item.count, bag_item.id)
                             move_count = move_count + 1
                         end
                     end
@@ -662,6 +698,7 @@ local function handle_kb_action(action)
             end
             if move_count > 0 then
                 ui.set_status('Consolidating ' .. item.name .. ' -> ' .. dest)
+                start_move_pump()
                 coroutine.schedule(function()
                     if not initialized then return end
                     refresh_organizer()
@@ -675,7 +712,11 @@ local function handle_kb_action(action)
                     else
                         windower.add_to_chat(207, 'GSUI: 0 of ' .. item.name .. ' moved to ' .. dest .. ' -- please stand in your Mog House or at a Nomad/Porter Moogle that has unlocked that bag.')
                     end
-                end, 2 + move_count * 0.5)
+                -- Wait per move bumped 0.5 -> 1.5 to cover the two-leg
+                -- bag-to-bag path (each item is now pull-to-inventory +
+                -- push-to-dest, two MOVE_DELAY ticks apart). Over-waits
+                -- harmlessly for one-leg moves.
+                end, 2 + move_count * 1.5)
             else
                 ui.set_status('Nothing to move')
             end
@@ -685,7 +726,8 @@ local function handle_kb_action(action)
             -- Single-item move: snapshot the source slot's count, attempt,
             -- and verify the slot drained.
             local src_before = item.count or 1
-            bag_org.queue_move(item.bag_name, item.bag_index, dest, item.count)
+            bag_org.queue_move(item.bag_name, item.bag_index, dest, item.count, item.id)
+            start_move_pump()
             ui.set_status(item.name .. ' -> ' .. dest)
             coroutine.schedule(function()
                 if not initialized then return end
@@ -814,7 +856,68 @@ local function handle_click(mx, my)
         end
         return true
     elseif hit.type == 'org_bag' then
-        show_org_bag(hit.bag_name)
+        -- Two behaviors depending on whether you have items multi-selected:
+        --   selection_count > 0  -> treat the bag as a MOVE TARGET. Same
+        --                           bulk-move logic the right-click handler
+        --                           used to do, only routed through left-
+        --                           click because Windower / the user's
+        --                           system filters right-click before it
+        --                           reaches the addon (right-click only
+        --                           rotates the camera).
+        --   selection_count == 0 -> SWITCH VIEW to that bag (the original
+        --                           behavior). show_org_bag already clears
+        --                           any straggler selection.
+        if ui.selection_count() > 0 then
+            local dest = hit.bag_name
+            local selected = ui.get_selected_items()
+            local snapshots = {}
+            local queued, skipped = 0, 0
+            for _, item in ipairs(selected) do
+                if item.bag_name == dest then
+                    skipped = skipped + 1
+                else
+                    snapshots[#snapshots+1] = {
+                        bag = item.bag_name, slot = item.bag_index,
+                        id = item.id, name = item.name,
+                        pre = item.count or 1,
+                    }
+                    bag_org.queue_move(item.bag_name, item.bag_index, dest, item.count, item.id)
+                    queued = queued + 1
+                end
+            end
+            ui.clear_selection()
+            ui.set_status('Moving ' .. queued .. ' item(s) -> ' .. dest
+                          .. (skipped > 0 and ' (' .. skipped .. ' skipped)' or ''))
+            start_move_pump()
+            coroutine.schedule(function()
+                if not initialized then return end
+                refresh_organizer()
+                local moved_lines, unmoved_count = {}, 0
+                for _, snap in ipairs(snapshots) do
+                    local post = 0
+                    for _, it in ipairs(_org_all_bag_items[snap.bag] or {}) do
+                        if it.id == snap.id and it.bag_index == snap.slot then
+                            post = it.count
+                            break
+                        end
+                    end
+                    local moved = snap.pre - post
+                    if moved > 0 then
+                        moved_lines[#moved_lines+1] = moved .. 'x ' .. snap.name
+                    else
+                        unmoved_count = unmoved_count + 1
+                    end
+                end
+                if #moved_lines > 0 then
+                    windower.add_to_chat(207, 'GSUI: moved -> ' .. dest .. ': ' .. table.concat(moved_lines, ', '))
+                end
+                if unmoved_count > 0 then
+                    windower.add_to_chat(207, 'GSUI: ' .. unmoved_count .. ' item(s) did not move -- please stand in your Mog House or at a Nomad/Porter Moogle that has unlocked the bag.')
+                end
+            end, 1 + queued * 1.5)
+        else
+            show_org_bag(hit.bag_name)
+        end
         return true
     elseif hit.type == 'org_conflict_btn' then
         show_org_conflicts()
@@ -1264,7 +1367,20 @@ local function handle_click(mx, my)
     elseif hit.type == 'inv_item' then
         if hit.item then
             ui.update_tooltip(hit.item)
-            if not ui.get_kb_mode() then
+            -- Organizer mode: LEFT-click toggles multi-select (instead of
+            -- starting a drag, since you can't drag-equip in the organizer
+            -- anyway -- the workflow there is "tag items -> right-click a
+            -- bag to bulk-move"). Right-click also toggles selection, so
+            -- either button works.
+            --
+            -- All other modes (regular inventory, Sets tab): left-click
+            -- still starts drag-and-drop as before.
+            if ui.get_mode() == 'organizer' and not ui.get_kb_mode() then
+                local now_selected = ui.toggle_selection(hit.item)
+                local count = ui.selection_count()
+                ui.set_status((now_selected and 'Selected: ' or 'Deselected: ')
+                              .. hit.item.name .. ' (' .. count .. ')')
+            elseif not ui.get_kb_mode() then
                 -- Start drag-and-drop (only in drag mode)
                 ui.start_item_drag(hit.item)
             end
@@ -1320,7 +1436,7 @@ local function handle_mouse_up(mx, my)
                         if bag_name ~= dest then
                             for _, bag_item in ipairs(items) do
                                 if bag_item.id == item.id then
-                                    bag_org.queue_move(bag_name, bag_item.bag_index, dest, bag_item.count)
+                                    bag_org.queue_move(bag_name, bag_item.bag_index, dest, bag_item.count, bag_item.id)
                                     move_count = move_count + 1
                                 end
                             end
@@ -1328,6 +1444,7 @@ local function handle_mouse_up(mx, my)
                     end
                     if move_count > 0 then
                         ui.set_status('Consolidating ' .. item.name .. ' -> ' .. dest)
+                        start_move_pump()
                         coroutine.schedule(function()
                             if not initialized then return end
                             refresh_organizer()
@@ -1341,7 +1458,7 @@ local function handle_mouse_up(mx, my)
                             else
                                 windower.add_to_chat(207, 'GSUI: 0 of ' .. item.name .. ' moved to ' .. dest .. ' -- please stand in your Mog House or at a Nomad/Porter Moogle that has unlocked that bag.')
                             end
-                        end, 1 + move_count * 0.5)
+                        end, 1 + move_count * 1.5)
                     else
                         ui.set_status('Nothing to move')
                     end
@@ -1350,7 +1467,8 @@ local function handle_mouse_up(mx, my)
                 else
                     -- Same attempt-then-verify pattern.
                     local src_before = item.count or 1
-                    bag_org.queue_move(item.bag_name, item.bag_index, dest, item.count)
+                    bag_org.queue_move(item.bag_name, item.bag_index, dest, item.count, item.id)
+                    start_move_pump()
                     ui.set_status(item.name .. ' -> ' .. dest)
                     coroutine.schedule(function()
                         if not initialized then return end
@@ -1793,6 +1911,26 @@ windower.register_event('mouse', function(type, x, y, delta, blocked)
     if type == 3 then
         if over then
             local hit = ui.hit_test(x, y)
+            -- Organizer-mode diagnostic. The move-to-bag workflow needs
+            -- the RIGHT-click to land on a BAG entry in the left sidebar,
+            -- not on the items themselves. Right-clicking the items just
+            -- toggles them off the selection (the existing inv_item
+            -- behavior). Print a one-line hint so silent failures are
+            -- obvious — common confusion is "I highlighted items, I'm
+            -- right-clicking on them to move, why nothing happens".
+            if ui.get_mode() == 'organizer' and ui.selection_count() > 0 then
+                local kind = (hit and hit.type) or 'nothing'
+                if kind == 'inv_item' then
+                    -- Don't change behavior, but warn so the user knows
+                    -- they're about to deselect rather than move.
+                    ui.set_status(('Tip: right-click a BAG in the left sidebar to MOVE the %d selected item(s). Right-clicking items toggles them off.')
+                                  :format(ui.selection_count()))
+                elseif kind ~= 'org_bag' and kind ~= 'equip_slot' then
+                    ui.set_status(('Right-click a BAG in the left sidebar to move (%d selected, you clicked: %s)')
+                                  :format(ui.selection_count(), kind))
+                    return true
+                end
+            end
             if hit and hit.type == 'equip_slot' and hit.slot and hit.item then
                 custom_set_active = true
                 set_gen.remove_slot(hit.slot)
@@ -1829,12 +1967,15 @@ windower.register_event('mouse', function(type, x, y, delta, blocked)
                                 id = item.id, name = item.name,
                                 pre = item.count or 1,
                             }
-                            bag_org.queue_move(item.bag_name, item.bag_index, dest, item.count)
+                            bag_org.queue_move(item.bag_name, item.bag_index, dest, item.count, item.id)
                             queued = queued + 1
                         end
                     end
                     ui.clear_selection()
                     ui.set_status('Moving ' .. queued .. ' item(s) -> ' .. dest .. (skipped > 0 and ' (' .. skipped .. ' skipped)' or ''))
+                    -- Drain the queue. Without this nothing ever moves;
+                    -- bag_org.queue_move only appends to the queue.
+                    start_move_pump()
                     coroutine.schedule(function()
                         if not initialized then return end
                         refresh_organizer()
@@ -1860,7 +2001,7 @@ windower.register_event('mouse', function(type, x, y, delta, blocked)
                         if unmoved_count > 0 then
                             windower.add_to_chat(207, 'GSUI: ' .. unmoved_count .. ' item(s) did not move -- please stand in your Mog House or at a Nomad/Porter Moogle that has unlocked the bag.')
                         end
-                    end, 1 + queued * 0.5)
+                    end, 1 + queued * 1.5)
                 end
             end
             return true
