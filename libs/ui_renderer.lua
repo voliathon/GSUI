@@ -2,6 +2,19 @@ local images = require('images')
 local texts = require('texts')
 local icon_handler = require('libs/icon_handler')
 
+-- Diagnostic breadcrumb: mirrors gsui.lua's dbg() so a crash inside
+-- ui.hide() reveals which sub-section ran last. Same path as gsui.lua's
+-- _dbg_path. Flip _dbg_enabled = false to silence.
+local _dbg_enabled = true
+local function _dbg(tag, msg)
+    if not _dbg_enabled then return end
+    local ok, f = pcall(io.open, windower.addon_path .. 'debug.log', 'a')
+    if ok and f then
+        f:write(os.date('%H:%M:%S') .. ' [ui_renderer/' .. tag .. '] ' .. (msg or '') .. '\n')
+        f:close()
+    end
+end
+
 local ui = {}
 
 local ICON_SIZE = 40
@@ -1806,9 +1819,11 @@ function ui.show()
 end
 
 function ui.hide()
+    _dbg('hide', 'entered')
     state.visible = false
     icon_handler.set_ui_visible(false)
     ui.cancel_item_drag()
+    _dbg('hide', 'phase A: drag cancelled')
     hide_element(elements.border_top)
     hide_element(elements.border_bottom)
     hide_element(elements.border_left)
@@ -1852,11 +1867,13 @@ function ui.hide()
     hide_element(elements.sets_header_bg)
     hide_element(elements.sets_header)
     hide_element(elements.sets_panel_bg)
+    _dbg('hide', 'phase B: static element hides done')
     if elements.sets_rows then
-        for _, r in ipairs(elements.sets_rows) do
+        for i, r in ipairs(elements.sets_rows) do
             if r.bg   then hide_element(r.bg)   end
             if r.text then hide_element(r.text) end
         end
+        _dbg('hide', 'phase C: sets_rows hidden (n=' .. #elements.sets_rows .. ')')
     end
     -- Scroll buttons
     if elements.scroll_up then
@@ -1874,15 +1891,20 @@ function ui.hide()
         hide_element(elements.filter_dropdown.arrow)
     end
     ui.close_dropdown()
+    _dbg('hide', 'phase D: scroll/filter dropdown hidden')
     -- Equip labels
     for _, lbl in pairs(elements.equip_labels) do
         hide_element(lbl)
     end
+    _dbg('hide', 'phase E: equip labels hidden')
     -- All icons
     for _, icon_data in pairs(elements.equip_icons) do
         icon_data.image:hide()
     end
+    _dbg('hide', 'phase F: equip icons hidden')
+    local _inv_count = 0
     for _, icon_data in pairs(elements.inv_icons) do
+        _inv_count = _inv_count + 1
         icon_data.image:hide()
         -- Also hide the multi-select indicator stack so reopening the
         -- panel doesn't briefly flash the previous selection state.
@@ -1890,6 +1912,7 @@ function ui.hide()
         if icon_data.select_bg     then icon_data.select_bg:hide()     end
         if icon_data.check_mark    then icon_data.check_mark:hide()    end
     end
+    _dbg('hide', 'phase G: inv icons + multi-select indicators hidden (n=' .. _inv_count .. ')')
     -- Sort toggle
     hide_element(elements.sort_toggle_bg)
     hide_element(elements.sort_toggle_text)
@@ -1899,8 +1922,10 @@ function ui.hide()
     hide_element(elements.kb_cursor)
     hide_element(elements.kb_selection)
     hide_element(elements.kb_mode_text)
+    _dbg('hide', 'phase H: kb cursor / mode hidden, about to hide_org_panel')
     -- Organizer elements
     ui.hide_org_panel()
+    _dbg('hide', 'phase I: org panel hidden, ui.hide() complete')
 end
 
 function ui.toggle()

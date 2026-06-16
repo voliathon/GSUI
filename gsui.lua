@@ -1979,19 +1979,28 @@ windower.register_event('incoming chunk', function(id, original, modified, injec
         _zoning_session = _zoning_session + 1
         local my_session = _zoning_session
         dbg('00B', 'zone packet received, session=' .. my_session)
-        bag_org.set_mog_house(false)
-        ui.set_mog_house(false)
-        ui.hide()
-        sync_kb_binds()
-        -- Anything in flight needs to die here. The inventory snapshot
-        -- the queue references is about to be invalidated by the zone,
-        -- and pending verify-coroutines that call refresh_organizer()
-        -- could crash when get_items() returns partial / nil data
-        -- mid-zone.
-        bag_org.clear_queue()
+        -- IMPORTANT diagnostic ordering: flip _zoning + stop pump BEFORE
+        -- ui.hide() so any in-flight texts/images coroutine bails. Then
+        -- breadcrumb between every step -- if we crash here the last
+        -- log line tells us which call AV'd d3d8.dll.
+        _zoning = true                      -- guard for any other coroutine FIRST
         _move_pump_active = false           -- stops the tick coroutine
-        _zoning = true                      -- guard for any other coroutine
-        if ui.clear_selection then ui.clear_selection() end
+        dbg('00B', 'step 1: flipped _zoning + pump')
+        pcall(bag_org.clear_queue)
+        dbg('00B', 'step 2: queue cleared')
+        pcall(bag_org.set_mog_house, false)
+        dbg('00B', 'step 3: bag_org mog flag cleared')
+        pcall(ui.set_mog_house, false)
+        dbg('00B', 'step 4: ui mog flag cleared')
+        local ok_hide, err_hide = pcall(ui.hide)
+        dbg('00B', 'step 5: ui.hide() returned ok=' .. tostring(ok_hide)
+                   .. (err_hide and (' err=' .. tostring(err_hide)) or ''))
+        pcall(sync_kb_binds)
+        dbg('00B', 'step 6: sync_kb_binds done')
+        if ui.clear_selection then
+            pcall(ui.clear_selection)
+            dbg('00B', 'step 7: selection cleared')
+        end
         -- Safety ceiling: if 0x00A never arrives (disconnect, missed
         -- packet, etc.) force _zoning false after a long timeout so the
         -- UI doesn't stay frozen forever. 30s is generous for the worst
