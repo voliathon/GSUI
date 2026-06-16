@@ -1725,24 +1725,55 @@ windower.register_event('login', function()
 end)
 
 windower.register_event('logout', function()
-    deactivate_kb_binds()
-    deactivate_fn_binds()
-    if initialized then
-        save_position()
-        ui.destroy()
-        initialized = false
-    end
+    -- Same race-condition protection as the unload handler. Flip the
+    -- guards first so any pending coroutine bails immediately, then
+    -- pcall the cleanup so a partial failure doesn't strand UI
+    -- elements on the screen.
+    initialized = false
+    _zoning     = true
+    _move_pump_active = false
+    pcall(bag_org.clear_queue)
+    pcall(deactivate_kb_binds)
+    pcall(deactivate_fn_binds)
+    pcall(save_position)
+    pcall(ui.destroy)
 end)
 
 windower.register_event('unload', function()
-    deactivate_kb_binds()
-    deactivate_fn_binds()
-    hotkey.unbind('gsui')
-    if initialized then
-        save_position()
-        ui.destroy()
-        icon_handler.cleanup()
-    end
+    -- Two race conditions that have crashed Windower on //lua reload:
+    --
+    --   1. `initialized` was never flipped to false here (only the
+    --      logout handler did that). So any coroutine.schedule that
+    --      fired BETWEEN the start of unload and Windower fully
+    --      tearing down the Lua state would still pass its
+    --      `if not initialized` guard and then touch UI elements
+    --      that destroy_all() had just freed -- racing the destroy
+    --      and the access.  Flip `initialized` FIRST so every
+    --      remaining coroutine fast-paths out.
+    --
+    --   2. The bag_org move pump and the verify-coroutines kept
+    --      running too. Mid-pump packet sends after the addon's
+    --      destroyed state has been GC'd produce Windower crashes
+    --      identical to the zone-time ones we just fixed (the
+    --      inventory snapshot is in an indeterminate state for the
+    --      reload window). Re-use the _zoning guard since semantics
+    --      are identical -- "stop touching game state until things
+    --      have settled".
+    initialized = false
+    _zoning     = true               -- gates every other coroutine
+    _move_pump_active = false        -- next tick will see this + bail
+
+    -- Drop any pending moves; we don't want them firing into a
+    -- half-torn-down addon. pcall everything below so one
+    -- component's destruction failing doesn't leave a stale Windower
+    -- text/image floating on the screen forever.
+    pcall(bag_org.clear_queue)
+    pcall(deactivate_kb_binds)
+    pcall(deactivate_fn_binds)
+    pcall(hotkey.unbind, 'gsui')
+    pcall(save_position)
+    pcall(ui.destroy)
+    pcall(icon_handler.cleanup)
 end)
 
 -- Packet handling for real-time updates
