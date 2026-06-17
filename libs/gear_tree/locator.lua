@@ -106,33 +106,81 @@ end
 
 -- Public: find_active(player, job) -> { path, filename, rel } or nil
 --
--- Strategy:
---   1. Fast path: try direct filename candidates in data/ root. This
---      is what the addon has always done; covers the common case
---      without a full directory walk.
---   2. Fallback: scan recursively and look for any .lua whose LEAF
---      filename matches a candidate. Catches users who put their
---      files in subfolders like data/<Character>/<JOB>.lua or
---      data/jobs/<Character>_<JOB>.lua.
+-- Resolution order (matches GearSwap's own subfolder logic so we pick
+-- THE SAME file GearSwap loaded, not just any file with a matching
+-- leaf name):
+--
+--   1. data/<filename>            (root, the historical layout)
+--   2. data/<player>/<filename>   (per-character folder, GS preferred)
+--   3. data/<player_lowercase>/<filename>
+--   4. ANY other folder with a matching leaf name (recursive fallback)
+--
+-- For each tier we walk every filename candidate (the various
+-- <Name>_<JOB>.lua / <Name>.lua / <JOB>.lua casings) before stepping
+-- down to the next tier. So we always prefer "in the player's named
+-- folder" over "any other folder", which matches user expectation:
+-- if data/Kalitzo/MNK.lua AND data/Backups/MNK.lua both exist, we
+-- pick Kalitzo's (the one GearSwap actually uses) every time.
 function locator.find_active(player, job)
     local cands = candidates(player, job)
-    -- Fast path
+
+    -- Tier 1: data/ root direct lookup
     for _, fname in ipairs(cands) do
         local p = GS_DATA_DIR .. fname
         if file_exists(p) then
             return { path = p, filename = fname, rel = fname }
         end
     end
-    -- Recursive fallback. Build a lowercase set of leaf names we want,
-    -- then walk the dir tree once and pick the first matching entry.
-    local want = {}
-    for _, fname in ipairs(cands) do want[fname:lower()] = true end
-    for _, e in ipairs(full_scan()) do
-        if want[e.filename:lower()] then
-            return e
+
+    -- Tier 2 + 3: player-named folder. Try both the exact player name
+    -- casing and the lowercase variant since GearSwap is case-sensitive
+    -- on most filesystems but the player may use either.
+    local player_folders = {}
+    if player and player ~= '' then
+        player_folders[#player_folders+1] = player
+        if player:lower() ~= player then player_folders[#player_folders+1] = player:lower() end
+    end
+    for _, folder in ipairs(player_folders) do
+        for _, fname in ipairs(cands) do
+            local p = GS_DATA_DIR .. folder .. SEP .. fname
+            if file_exists(p) then
+                return { path = p, filename = fname, rel = folder .. SEP .. fname }
+            end
         end
     end
-    return nil
+
+    -- Tier 4: recursive scan, but PREFER results whose path starts
+    -- with the player folder. Build a lowercase set of leaf names we
+    -- want, then walk; if multiple match, pick the highest-priority
+    -- one (player-folder match > shallowest depth > alphabetical).
+    local want = {}
+    for _, fname in ipairs(cands) do want[fname:lower()] = true end
+    local matches = {}
+    for _, e in ipairs(full_scan()) do
+        if want[e.filename:lower()] then
+            matches[#matches+1] = e
+        end
+    end
+    if #matches == 0 then return nil end
+    local function score(e)
+        local rel_lower = e.rel:lower()
+        for _, folder in ipairs(player_folders) do
+            if rel_lower:sub(1, #folder + 1) == folder:lower() .. SEP then
+                return 0          -- best: in player's folder
+            end
+        end
+        -- Count separators -> depth. Shallower = higher priority
+        -- (more likely to be the "main" file vs an archive copy).
+        local depth = 1
+        for _ in rel_lower:gmatch(SEP) do depth = depth + 1 end
+        return depth
+    end
+    table.sort(matches, function(a, b)
+        local sa, sb = score(a), score(b)
+        if sa ~= sb then return sa < sb end
+        return a.rel:lower() < b.rel:lower()
+    end)
+    return matches[1]
 end
 
 -- Public: list_all() -> sorted list of every .lua file under data/,
