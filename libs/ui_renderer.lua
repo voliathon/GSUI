@@ -1974,6 +1974,92 @@ function ui.is_visible()
     return state.visible
 end
 
+-- Bump every currently-visible GSUI element to the TOP of Windower's
+-- texts/images render order. Windower fixes per-object z-order at
+-- creation time, so addons that rebuild their UI elements after GSUI
+-- has loaded (Timers' recast bars, enemybar, AnnounceTarget popups,
+-- etc.) end up drawing OVER us. Calling :show() on an already-visible
+-- object re-registers it with the renderer, which pushes it to the
+-- end of the draw list = top of the visible stack.
+--
+-- We deliberately read each object's own :visible() flag and only
+-- bump the ones currently shown. Calling :show() on a hidden element
+-- would un-hide it, which would mess up mode-specific visibility (the
+-- organizer panel that should stay hidden in gearswap mode, etc.).
+--
+-- Cost: a single iteration over ~80-100 element references, each
+-- with a cheap C-bridge :visible() + :show() call. Safe to invoke
+-- every couple of seconds from prerender, or on demand via the
+-- //gsui front chat command.
+function ui.bring_to_front()
+    if not state.visible then return end
+    local function bump(el)
+        if not el or type(el) ~= 'table' then return end
+        if el.visible and el:visible() and el.show then
+            el:show()
+        end
+    end
+    local function bump_pair(pair)
+        if pair then bump(pair.bg); bump(pair.text); bump(pair.arrow) end
+    end
+    -- Frame + tabs + bg
+    bump(elements.border_top); bump(elements.border_bottom)
+    bump(elements.border_left); bump(elements.border_right)
+    bump(elements.title_bar); bump(elements.title_text)
+    bump(elements.bg); bump(elements.equip_bg); bump(elements.inv_bg); bump(elements.inv_label)
+    bump(elements.tab_gs_bg); bump(elements.tab_gs_text)
+    bump(elements.tab_org_bg); bump(elements.tab_org_text)
+    bump(elements.tooltip_bg); bump(elements.tooltip_text)
+    bump(elements.stat_bg); bump(elements.stat_label); bump(elements.stat_text)
+    bump(elements.status_text); bump(elements.drag_icon)
+    -- Buttons
+    bump(elements.generate_btn_bg); bump(elements.generate_btn_text)
+    bump(elements.remove_btn_bg); bump(elements.remove_btn_text)
+    bump(elements.remove_all_btn_bg); bump(elements.remove_all_btn_text)
+    bump(elements.reequip_btn_bg); bump(elements.reequip_btn_text)
+    bump(elements.save_btn_bg); bump(elements.save_btn_text)
+    bump(elements.load_btn_bg); bump(elements.load_btn_text)
+    bump(elements.sort_toggle_bg); bump(elements.sort_toggle_text)
+    bump(elements.stack_btn_bg); bump(elements.stack_btn_text)
+    -- Scroll buttons + filter dropdown
+    bump_pair(elements.scroll_up); bump_pair(elements.scroll_down)
+    bump_pair(elements.filter_dropdown)
+    if elements.filter_menu_items then
+        for _, it in ipairs(elements.filter_menu_items) do bump_pair(it) end
+    end
+    if elements.filter_menu then bump(elements.filter_menu.bg) end
+    -- Sets panel
+    bump(elements.sets_header_bg); bump(elements.sets_header); bump(elements.sets_panel_bg)
+    if elements.sets_rows then
+        for _, r in ipairs(elements.sets_rows) do bump(r.bg); bump(r.text) end
+    end
+    -- Equip slots + labels
+    for _, lbl in pairs(elements.equip_labels or {}) do bump(lbl) end
+    for _, ic in pairs(elements.equip_icons or {}) do
+        if ic and ic.image then bump(ic.image) end
+    end
+    -- Inventory icons + multi-select indicators (the lazy-allocated
+    -- ones are only bumped if they exist on the cell).
+    for _, ic in pairs(elements.inv_icons or {}) do
+        if ic then
+            if ic.image then bump(ic.image) end
+            bump(ic.select_border); bump(ic.check_mark)
+        end
+    end
+    -- KB nav overlay
+    bump(elements.kb_cursor); bump(elements.kb_selection); bump(elements.kb_mode_text)
+    -- Organizer panel
+    bump(elements.org_header)
+    bump(elements.org_conflict_btn_bg); bump(elements.org_conflict_btn_text)
+    bump(elements.org_scattered_btn_bg); bump(elements.org_scattered_btn_text)
+    bump_pair(elements.org_scroll_up); bump_pair(elements.org_scroll_down)
+    if elements.org_bag_rows then
+        for _, r in ipairs(elements.org_bag_rows) do
+            bump(r.bg); bump(r.name); bump(r.count)
+        end
+    end
+end
+
 function ui.get_position()
     return state.pos_x, state.pos_y
 end

@@ -2565,8 +2565,29 @@ windower.register_event('keyboard', function(dik, pressed, flags, blocked)
     if blocked then _last_blocked_at = os.clock() end
 end)
 
+-- Last time bring_to_front was auto-fired from prerender. Periodic
+-- z-bump (every 2 s while visible) keeps GSUI on top of addons that
+-- rebuild their UI elements over time (Timers' recast bars,
+-- enemybar, AnnounceTarget popups, etc.) -- per user screenshot
+-- 3h6LH6q showing Timers overlaying the inventory grid.
+local _last_front_bump = 0
+
 windower.register_event('prerender', function()
     if not initialized or _zoning then return end
+
+    -- Re-assert z-order every 2s when visible. Cheap (one pass over
+    -- ~100 element refs, each a quick :visible() check before :show).
+    -- Won't fight DLL plugins (Timers.dll renders via a different
+    -- pass we can't reach from Lua), but wins against every Lua addon
+    -- that uses texts/images.
+    if ui.is_visible and ui.is_visible() then
+        local now = os.clock()
+        if (now - _last_front_bump) > 2 then
+            _last_front_bump = now
+            if ui.bring_to_front then pcall(ui.bring_to_front) end
+        end
+    end
+
     if pending_refresh then
         local now = os.clock()
         if (now - refresh_timer) > 0.3 or now > refresh_deadline then
@@ -2645,6 +2666,15 @@ windower.register_event('addon command', function(...)
     elseif cmd == 'refresh' or cmd == 'scan' then
         refresh_data()
         windower.add_to_chat(207, 'GSUI: Refreshed.')
+    elseif cmd == 'front' or cmd == 'top' or cmd == 'raise' then
+        -- Manual override: bump GSUI to the top of the texts/images
+        -- render order RIGHT NOW. Auto-runs every 2s while visible from
+        -- the prerender hook too, but this is the "do it instantly"
+        -- knob for users who don't want to wait for the tick.
+        if ui.bring_to_front then
+            ui.bring_to_front()
+            windower.add_to_chat(207, 'GSUI: brought to front.')
+        end
     elseif cmd == 'sets-where' or (cmd == 'sets' and args[1] == 'where') then
         -- Diagnostic — shows exactly where the locator is looking and
         -- what filenames it tries. Use this when "(no GS file)" shows up
