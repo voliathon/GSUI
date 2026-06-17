@@ -65,27 +65,82 @@ local function candidates(player, job)
     return out
 end
 
--- Public: find_active(player, job) -> { path, filename } or nil
+-- Recursively walk the GearSwap data dir collecting every .lua file.
+-- Returns a list of { path = absolute, filename = leaf, rel = relative-to-data-dir }
+-- so callers can both load by absolute path AND display the subfolder
+-- structure to the user. Uses Windower's get_dir / dir_exists APIs
+-- which are bundled with every Windower install.
+--
+-- Subfolder layouts are common in the GearSwap community for organizing
+-- sets per character / per job (e.g. data/<Character>/<job>.lua or
+-- data/jobs/<Character>_<JOB>.lua). The earlier locator only scanned
+-- the direct data/ dir which missed those layouts.
+local function scan_dir(dir, rel_prefix, into, depth)
+    depth = depth or 0
+    if depth > 6 then return end                   -- runaway-recursion safety
+    if not windower or not windower.get_dir then return end
+    local ok, entries = pcall(windower.get_dir, dir)
+    if not ok or type(entries) ~= 'table' then return end
+    for _, name in ipairs(entries) do
+        if name ~= '.' and name ~= '..' then
+            local full = dir .. name
+            local rel  = (rel_prefix == '') and name or (rel_prefix .. SEP .. name)
+            -- A directory check first; ENTRIES may contain folders without
+            -- any extension hint, so always probe dir_exists before
+            -- treating as a file.
+            if windower.dir_exists and windower.dir_exists(full) then
+                scan_dir(full .. SEP, rel, into, depth + 1)
+            elseif name:sub(-4):lower() == '.lua' then
+                into[#into + 1] = { path = full, filename = name, rel = rel }
+            end
+        end
+    end
+end
+
+local function full_scan()
+    local out = {}
+    scan_dir(GS_DATA_DIR, '', out, 0)
+    table.sort(out, function(a, b) return a.rel:lower() < b.rel:lower() end)
+    return out
+end
+
+-- Public: find_active(player, job) -> { path, filename, rel } or nil
+--
+-- Strategy:
+--   1. Fast path: try direct filename candidates in data/ root. This
+--      is what the addon has always done; covers the common case
+--      without a full directory walk.
+--   2. Fallback: scan recursively and look for any .lua whose LEAF
+--      filename matches a candidate. Catches users who put their
+--      files in subfolders like data/<Character>/<JOB>.lua or
+--      data/jobs/<Character>_<JOB>.lua.
 function locator.find_active(player, job)
-    for _, fname in ipairs(candidates(player, job)) do
+    local cands = candidates(player, job)
+    -- Fast path
+    for _, fname in ipairs(cands) do
         local p = GS_DATA_DIR .. fname
         if file_exists(p) then
-            return { path = p, filename = fname }
+            return { path = p, filename = fname, rel = fname }
+        end
+    end
+    -- Recursive fallback. Build a lowercase set of leaf names we want,
+    -- then walk the dir tree once and pick the first matching entry.
+    local want = {}
+    for _, fname in ipairs(cands) do want[fname:lower()] = true end
+    for _, e in ipairs(full_scan()) do
+        if want[e.filename:lower()] then
+            return e
         end
     end
     return nil
 end
 
--- Public: list_all() -> sorted list of every .lua file in GearSwap/data
--- Used to populate a file picker so the user can switch off the auto-
--- detected file if they want to inspect a different job's sets.
+-- Public: list_all() -> sorted list of every .lua file under data/,
+-- including subfolders. Each entry is { path, filename, rel } where
+-- `rel` is the path relative to data/ (handy for showing subfolder
+-- groupings in a picker UI).
 function locator.list_all()
-    local files = {}
-    -- Windower exposes os.listdir or similar? Use Lua io / dir scan.
-    -- Fallback to scanning via the player/job we know — at least surface
-    -- the auto-detected one. Full directory listing requires lfs which
-    -- isn't always bundled; defer that to a follow-up if needed.
-    return files
+    return full_scan()
 end
 
 function locator.data_dir()
