@@ -983,6 +983,27 @@ local function handle_kb_action(action)
         ui.set_status('')
     elseif action.type == 'show_bag' then
         show_org_bag(action.bag_name)
+    elseif action.type == 'button' then
+        -- Keyboard mode: synthesize a click at the center of the
+        -- focused button's bounding rect. handle_click() does the
+        -- ui.hit_test + dispatch, so this reuses every existing
+        -- click branch (Generate Set, Remove, Remove All, Equip Now,
+        -- Save, Load) without us having to duplicate the logic.
+        local rect = ui.get_button_rect and ui.get_button_rect(action.name)
+        if rect then
+            local cx = rect.x + math.floor(rect.w / 2)
+            local cy = rect.y + math.floor(rect.h / 2)
+            handle_click(cx, cy)
+        end
+    elseif action.type == 'sets_row' then
+        -- Click the sets row at its center via synthesized coords -- same
+        -- pattern as the button case so we reuse handle_click's branch.
+        local rect = ui.get_sets_row_rect and ui.get_sets_row_rect(action.node)
+        if rect then
+            local cx = rect.x + math.floor(rect.w / 2)
+            local cy = rect.y + math.floor(rect.h / 2)
+            handle_click(cx, cy)
+        end
     end
 end
 

@@ -417,6 +417,7 @@ function ui.build()
     elements.generate_btn_bg:show()
     elements.generate_btn_text = make_text('Generate Set', btn_x + 14, btn_y + 5, 11, 255, 255, 255, true)
     elements.generate_btn_text:show()
+    state.generate_btn_rect = { x = btn_x, y = btn_y, w = BTN_W, h = BTN_H }
 
     -- Status text
     elements.status_text = make_text('', btn_x + BTN_W + 8, btn_y + 5, 10, 180, 255, 180)
@@ -449,6 +450,7 @@ function ui.build()
     -- name now that Update Gear handles the "read live state" direction.
     elements.reequip_btn_text = make_text('Equip Now', btn_x + 30, btn3_y + 5, 11, 255, 255, 255, true)
     elements.reequip_btn_text:show()
+    state.reequip_btn_rect = { x = btn_x, y = btn3_y, w = BTN_W, h = BTN_H }
 
     -- Save / Load buttons
     local half_btn = math.floor((BTN_W - SLOT_PAD) / 2)
@@ -2060,6 +2062,30 @@ function ui.bring_to_front()
     end
 end
 
+-- Expose action-button rects so keyboard-mode dispatch in gsui.lua can
+-- synthesize a click at the center of the focused button (and reuse
+-- the existing click handler's branches without code duplication).
+function ui.get_button_rect(name)
+    if not name then return nil end
+    if name == 'generate'   then return state.generate_btn_rect   end
+    if name == 'remove'     then return state.remove_btn_rect     end
+    if name == 'remove_all' then return state.remove_all_btn_rect end
+    if name == 'reequip'    then return state.reequip_btn_rect    end
+    if name == 'save'       then return state.save_btn_rect       end
+    if name == 'load'       then return state.load_btn_rect       end
+    return nil
+end
+
+-- Look up a sets-row rect by its underlying node (for keyboard-mode
+-- "click this set" dispatch).
+function ui.get_sets_row_rect(node)
+    if not node or not state.sets_rects then return nil end
+    for _, r in ipairs(state.sets_rects) do
+        if r.node == node then return r end
+    end
+    return nil
+end
+
 function ui.get_position()
     return state.pos_x, state.pos_y
 end
@@ -2640,6 +2666,28 @@ function ui.update_kb_cursor()
             elements.kb_cursor:hide()
         end
 
+    elseif state.kb_focus == 'buttons' then
+        local L = kb_button_list()
+        if #L == 0 then elements.kb_cursor:hide(); return end
+        state.kb_action_index = math.max(1, math.min(state.kb_action_index or 1, #L))
+        local r = L[state.kb_action_index].rect
+        elements.kb_cursor:size(r.w, r.h)
+        elements.kb_cursor:pos(r.x, r.y)
+        elements.kb_cursor:show()
+
+    elseif state.kb_focus == 'sets' then
+        local n = kb_set_row_count()
+        if n == 0 then elements.kb_cursor:hide(); return end
+        state.kb_sets_index = math.max(1, math.min(state.kb_sets_index or 1, n))
+        local rect = state.sets_rects[state.kb_sets_index]
+        if rect then
+            elements.kb_cursor:size(rect.w, rect.h)
+            elements.kb_cursor:pos(rect.x, rect.y)
+            elements.kb_cursor:show()
+        else
+            elements.kb_cursor:hide()
+        end
+
     elseif state.kb_focus == 'filter' then
         -- Filter dropdown has its own highlight, hide the general cursor
         elements.kb_cursor:hide()
@@ -2772,16 +2820,67 @@ function ui.kb_navigate(dir)
         ui.highlight_filter_item(state.kb_filter_index)
     end
 
+    -- New focus zones: action buttons + gearset rows. Both use up/down
+    -- to walk a vertical list; left/right are no-ops there.
+    if state.kb_focus == 'buttons' then
+        local L = kb_button_list()
+        if #L == 0 then return end
+        state.kb_action_index = state.kb_action_index or 1
+        if dir == 'up'   and state.kb_action_index > 1 then state.kb_action_index = state.kb_action_index - 1 end
+        if dir == 'down' and state.kb_action_index < #L then state.kb_action_index = state.kb_action_index + 1 end
+    elseif state.kb_focus == 'sets' then
+        local n = kb_set_row_count()
+        if n == 0 then return end
+        state.kb_sets_index = state.kb_sets_index or 1
+        if dir == 'up'   and state.kb_sets_index > 1 then state.kb_sets_index = state.kb_sets_index - 1 end
+        if dir == 'down' and state.kb_sets_index < n then state.kb_sets_index = state.kb_sets_index + 1 end
+    end
+
     ui.update_kb_cursor()
     ui.update_kb_selection()
+end
+
+-- Action buttons in the gearswap left panel, top-to-bottom. Used by
+-- the 'buttons' focus zone to know what to highlight and what action
+-- to dispatch on Enter. Each entry references the element + rect
+-- stashed on state at build time so positions stay in sync with the
+-- live layout.
+local function kb_button_list()
+    local L = {}
+    if state.generate_btn_rect then L[#L+1] = { name = 'generate',   rect = state.generate_btn_rect } end
+    if state.remove_btn_rect   then L[#L+1] = { name = 'remove',     rect = state.remove_btn_rect   } end
+    if state.remove_all_btn_rect then L[#L+1] = { name = 'remove_all', rect = state.remove_all_btn_rect } end
+    if state.reequip_btn_rect  then L[#L+1] = { name = 'reequip',    rect = state.reequip_btn_rect  } end
+    if state.save_btn_rect     then L[#L+1] = { name = 'save',       rect = state.save_btn_rect     } end
+    if state.load_btn_rect     then L[#L+1] = { name = 'load',       rect = state.load_btn_rect     } end
+    return L
+end
+
+local function kb_set_row_count()
+    -- state.sets_rects has exactly one entry per visible gearset row
+    -- (refresh_sets_panel pushes them as it walks the flat tree). Use
+    -- this rather than #elements.sets_rows -- the latter mixes bg /
+    -- text / selection-highlight entries and would double-count.
+    return state.sets_rects and #state.sets_rects or 0
 end
 
 function ui.kb_switch_focus()
     if not state.kb_mode then return end
 
     if state.mode == 'gearswap' then
+        -- Cycle: inv -> equip -> buttons -> sets (if any) -> inv
         if state.kb_focus == 'inv' then
             state.kb_focus = 'equip'
+        elseif state.kb_focus == 'equip' then
+            state.kb_focus = 'buttons'
+            state.kb_action_index = state.kb_action_index or 1
+        elseif state.kb_focus == 'buttons' then
+            if kb_set_row_count() > 0 then
+                state.kb_focus = 'sets'
+                state.kb_sets_index = state.kb_sets_index or 1
+            else
+                state.kb_focus = 'inv'
+            end
         else
             state.kb_focus = 'inv'
         end
@@ -2870,6 +2969,21 @@ function ui.kb_select()
                 return { type = 'show_bag', bag_name = bag_def.key }
             end
         end
+
+    elseif state.kb_focus == 'buttons' then
+        local L = kb_button_list()
+        local entry = L[state.kb_action_index]
+        if not entry then return nil end
+        -- Pass the same button name the click handler uses as the
+        -- hit.type prefix. gsui.lua handle_kb_action will route this
+        -- to the existing click branches.
+        return { type = 'button', name = entry.name }
+
+    elseif state.kb_focus == 'sets' then
+        local idx = state.kb_sets_index
+        local hit = state.sets_rects and state.sets_rects[idx]
+        if not hit or not hit.node then return nil end
+        return { type = 'sets_row', node = hit.node }
     end
 
     return nil

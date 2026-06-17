@@ -14,9 +14,9 @@ This software is provided **AS IS, without warranty of any kind**, express or im
 
 ## 🔑 Hotkey
 
-**Default toggle: `B`**
+**Default toggle: `Alt+G`**
 
-Press `B` in-game to show or hide the window. Disabled while the chat bar or macro editor is open.
+Press `Alt+G` in-game to show or hide the window. Routes through Windower's `bind` system, so the keybind is automatically suppressed while the chat bar, search box, or macro editor is open.
 
 **Rebind it any time** — GSUI is the only addon in the family with live hotkey rebinding:
 
@@ -31,6 +31,81 @@ Press `B` in-game to show or hide the window. Disabled while the chat bar or mac
 The rebind takes effect immediately — no `//lua reload` needed.
 
 Slash-command equivalents: `//gsui`, `//gsui toggle`.
+
+---
+
+## ⌨️ Keyboard mode
+
+GSUI ships with full keyboard navigation as an alternative to mouse +
+drag. Toggle it with **F3** (the title bar shows `[F3:Drag]` in mouse
+mode and `[F3:KB]` in keyboard mode). The keybind only fires while the
+GSUI window is open and chat / macro editor is closed.
+
+### Global keys
+
+| Key | What it does |
+|---|---|
+| `F1` | Switch to **GearSwap** mode (gear builder + sets panel) |
+| `F2` | Switch to **Organizer** mode (bag mover) |
+| `F3` | Toggle Keyboard ↔ Drag mode |
+| `F4` | Open / close the **Filter** dropdown |
+| `Tab` | Cycle focus zone — what the cursor highlights |
+| `↑ ↓ ← →` | Move within the current focus zone |
+| `Enter` | Select / confirm — fires the action under the cursor |
+| `Escape` | Cancel: closes filter, clears slot filter, deselects item |
+| `Delete` | Remove the item from the focused equipment slot (Equip grid) |
+
+### Focus zones
+
+`Tab` cycles between these. The yellow cursor outline shows which zone
+you're in.
+
+**GearSwap mode:**
+
+| Zone | What's there | How to interact |
+|---|---|---|
+| `inv` | All Storage grid (the inventory pane on the right) | Arrows move cell-by-cell. Enter selects an item; the focus jumps to `equip` so you can pick a slot for it. |
+| `equip` | The 16 equipment slots (head, body, ear, ring, etc.) | Arrows move slot-by-slot. With an item selected, Enter equips it. With no item selected, Enter toggles slot-filter (restrict inventory grid to items that fit that slot). `Delete` clears the slot. |
+| `buttons` | The action buttons on the left: **Generate Set / Remove / Remove All / Equip Now / Save / Load** | `↑ ↓` walks the button list. `Enter` fires the focused button. |
+| `sets` | The gearset list at the bottom of the left panel (parsed from your current GearSwap .lua) | `↑ ↓` walks the rows. `Enter` clicks the focused row — loads its gear into the equip grid (and toggles branches open/closed). Use **Save** afterward to write your changes back to the .lua. |
+
+**Organizer mode:**
+
+| Zone | What's there | How to interact |
+|---|---|---|
+| `inv` | All Storage grid | Same as gearswap mode. Enter selects, focus jumps to `bags`. |
+| `bags` | Bag list on the left (inventory / wardrobe / safe / locker / etc.) | Arrows walk the bags. Enter opens the focused bag's contents in the grid; with an item selected from `inv`, Enter moves it to the focused bag. |
+
+### Filter dropdown (F4)
+
+Opens a menu of stat-based and slot-based filters parsed from your live
+inventory.
+
+| Key | What it does |
+|---|---|
+| `F4` | Open dropdown (focus becomes `filter`) |
+| `↑ ↓` | Walk filter presets |
+| `Enter` | Apply the focused filter |
+| `Escape` or `F4` again | Close dropdown |
+
+The slot section at the bottom (`[Main]`, `[Sub]`, `[Head]`, …, `[Ring]`,
+`[Back]`) restricts the inventory grid to items that fit that slot — same
+effect as clicking the slot in the Equip grid, but reachable from inside
+the dropdown.
+
+### Chat commands
+
+For users who prefer slash commands or want to wire actions into FFXI
+macros:
+
+| Command | What it does |
+|---|---|
+| `//gsui` or `//gsui toggle` | Open / close the window |
+| `//gsui show` / `//gsui hide` | Explicit show / hide |
+| `//gsui refresh` | Force re-scan inventory + sets file |
+| `//gsui front` (or `top`, `raise`) | Pull GSUI on top of other addons |
+| `//gsui sets-where` | Print which GearSwap file the locator picked + the candidate filenames it tried (diagnostic for "Sets (no GS file)") |
+| `//gsui changekey …` | Rebind the toggle hotkey (see Hotkey section above) |
 
 ---
 
